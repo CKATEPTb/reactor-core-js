@@ -541,9 +541,11 @@ export class Flux<T> extends AbstractPipePublisher<T> {
      */
     public subscribe({
                          onNext = (value: T) => {
-                         }, onError = (error: Error) => {
-        }, onComplete = () => {
-        }
+                         },
+                         onError = (error: Error) => {
+                         },
+                         onComplete = () => {
+                         }
                      } = {}): Subscription {
         return this.publisher.subscribe({onNext, onError, onComplete});
     }

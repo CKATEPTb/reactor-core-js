@@ -27,6 +27,6 @@ export class ReplayLimitSink<T> extends ReplaySink<T> {
      * @param {T | Error} [data] - The data associated with the emission, if any.
      */
     protected override store(emit: "next" | "error" | "complete", data?: Error | T) {
-        if (this.buffer.length <= this.limit) super.store(emit, data)
+        if (this.buffer.length < this.limit) super.store(emit, data)
     }
 }

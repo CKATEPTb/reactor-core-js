@@ -16,14 +16,15 @@ export function combine<T>(sink: Sink<T> & Publisher<T>, generator: ((sink: Sink
         public override subscribe(subscriber: Subscriber<T>): Subscription {
             const gen = generator(sink) as unknown as Subscription
             const sub = super.subscribe(subscriber)
+            const req = typeof gen?.request == 'function'
             return {
                 request(count: number) {
                     sub.request(count)
-                    gen?.request(count)
+                    !req || gen?.request(count)
                 },
                 unsubscribe() {
                     sub.unsubscribe()
-                    gen?.unsubscribe()
+                    !req || gen?.unsubscribe()
                 }
             };
         }

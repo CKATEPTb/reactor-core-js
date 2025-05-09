@@ -147,6 +147,19 @@ export abstract class AbstractPipePublisher<T> implements PipePublisher<T> {
         const unicast = new class A extends BackpressurePublisher<R> {
             public override subscribe(subscriber: Subscriber<R>): Subscription {
                 onSubscribe?.(subscriber)
+                try {
+                    producer(value => {
+                            if (many && value == null) onRequest?.(1)
+                            else sink.next(value)
+                        },
+                        error => {
+                            sink.error(error)
+                            onRequest?.(1)
+                        },
+                        () => sink.complete())
+                } catch (error) {
+                    sink.error(error as Error)
+                }
                 const sub = super.subscribe(subscriber)
                 return {
                     request(count: number) {
@@ -160,19 +173,6 @@ export abstract class AbstractPipePublisher<T> implements PipePublisher<T> {
                 };
             }
         }(sink);
-        try {
-            producer(value => {
-                    if (many && value == null) onRequest?.(1)
-                    else sink.next(value)
-                },
-                error => {
-                    sink.error(error)
-                    onRequest?.(1)
-                },
-                () => sink.complete())
-        } catch (error) {
-            sink.error(error as Error)
-        }
         return this.wrap(unicast)
     }
 
