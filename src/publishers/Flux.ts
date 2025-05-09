@@ -74,10 +74,6 @@ export class Flux<T> extends AbstractPipePublisher<T> {
         }))
     }
 
-    protected sinkType(): 'one' | 'many' {
-        return 'many';
-    }
-
     public first(): Mono<T> {
         return Mono.generate(sink => {
             let sub: Subscription;
@@ -469,5 +465,9 @@ export class Flux<T> extends AbstractPipePublisher<T> {
 
     public override subscribeOn(scheduler: Scheduler): Flux<T> {
         return super.subscribeOn(scheduler) as Flux<T>;
+    }
+
+    protected sinkType(): 'one' | 'many' {
+        return 'many';
     }
 }

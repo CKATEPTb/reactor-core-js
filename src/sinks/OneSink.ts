@@ -1,6 +1,6 @@
 import {BackpressureSink} from "@/sinks/BackpressureSink";
-import { Subscriber } from "@/subscriptions/Subscriber";
-import { Subscription } from "@/subscriptions/Subscription";
+import {Subscriber} from "@/subscriptions/Subscriber";
+import {Subscription} from "@/subscriptions/Subscription";
 
 export default class OneSink<T> extends BackpressureSink<T> {
     public override subscribe(subscriber: Subscriber<T>): Subscription {

@@ -5,10 +5,14 @@ import {Sink} from "@/sinks/Sink";
 import {Scheduler} from "@/schedulers/Scheduler";
 import {combine} from "@/utils";
 import {Flux} from "@/publishers/Flux";
-import { Subscription } from "@/subscriptions/Subscription";
-import { Subscriber } from "@/subscriptions/Subscriber";
+import {Subscription} from "@/subscriptions/Subscription";
+import {Subscriber} from "@/subscriptions/Subscriber";
 
 export class Mono<T> extends AbstractPipePublisher<T> {
+
+    protected constructor(publisher: Publisher<T>) {
+        super(publisher)
+    }
 
     public static generate<T>(generator: ((sink: Sink<T>) => void)): Mono<T> {
         return new Mono(combine(new OneSink<T>(), generator))
@@ -70,10 +74,6 @@ export class Mono<T> extends AbstractPipePublisher<T> {
         }))
     }
 
-    protected constructor(publisher: Publisher<T>) {
-        super(publisher)
-    }
-
     public subscribe({
                          onNext = (value: T) => {
                          },
@@ -85,10 +85,6 @@ export class Mono<T> extends AbstractPipePublisher<T> {
         const subscription = this.publisher.subscribe({onNext, onError, onComplete})
         subscription.request(1)
         return subscription
-    }
-
-    protected sinkType(): 'one' | 'many' {
-        return 'one';
     }
 
     public flatMapMany<R>(mapper: (value: T) => Publisher<R>): Flux<R> {
@@ -150,7 +146,6 @@ export class Mono<T> extends AbstractPipePublisher<T> {
             })
         })
     }
-
 
     public override pipe<R>(producer: (onNext: (value: R) => void, onError: (error: Error) => void, onComplete: () => void) => void, onSubscribe?: (subscriber: Subscriber<R>) => void, onRequest?: (request: number) => void, onUnsubscribe?: () => void): Mono<R> {
         return super.pipe(producer, onSubscribe, onRequest, onUnsubscribe) as Mono<R>;
@@ -214,5 +209,9 @@ export class Mono<T> extends AbstractPipePublisher<T> {
 
     public override subscribeOn(scheduler: Scheduler): Mono<T> {
         return super.subscribeOn(scheduler) as Mono<T>;
+    }
+
+    protected sinkType(): 'one' | 'many' {
+        return 'one';
     }
 }
