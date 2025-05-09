@@ -1,8 +1,4 @@
-# @ckateptb/reactive-core-js
-
-## Description
-
-The **reactive-core-jS** library is a TypeScript-based implementation of
+The **reactor-core-js** library is a TypeScript-based implementation of
 reactive streams, inspired by **reactor-core**. It provides powerful tools
 for building reactive systems with backpressure support, designed for
 high-performance data processing and efficient flow control.
@@ -19,19 +15,19 @@ This library supports a wide range of reactive patterns, including:
 To install the package using **npm**:
 
 ```bash
-npm install @ckateptb/reactive-core-js
+npm install CKATEPTb/reactor-core-js#production
 ```
 
 To install the package using **pnpm**:
 
 ```bash
-pnpm install @ckateptb/reactive-core-js
+pnpm install CKATEPTb/reactor-core-js#production
 ```
 
 To install the package using **yarn**:
 
 ```bash
-yarn install @ckateptb/reactive-core-js
+yarn install CKATEPTb/reactor-core-js#production
 ```
 
 ## Features
