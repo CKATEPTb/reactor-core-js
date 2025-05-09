@@ -1,7 +1,5 @@
 # @ckateptb/reactive-core-js
 
---- 
-
 ## Description
 
 The **reactive-core-jS** library is a TypeScript-based implementation of
@@ -15,8 +13,6 @@ This library supports a wide range of reactive patterns, including:
 - **Flux:** A multi-value, stream-like result.
 - **Sinks:** Different types of data sinks with backpressure management.
 - **Schedulers:** Various schedulers for asynchronous task execution.
-
----
 
 ## Installation
 
@@ -38,8 +34,6 @@ To install the package using **yarn**:
 yarn install @ckateptb/reactive-core-js
 ```
 
----
-
 ## Features
 
 * **Reactive Streams with Backpressure**: Seamless management of data flow and pressure.
@@ -48,11 +42,7 @@ yarn install @ckateptb/reactive-core-js
 * **Reactive Extensions**: Map, filter, merge, concat, reduce, and more.
 * **TypeScript Support**: Fully typed for safer and more maintainable code.
 
----
-
 ## Usage
-
----
 
 ### Basic Example: Using Mono and Flux
 
@@ -146,15 +136,11 @@ pnpm install
 pnpm run build
 ```
 
----
-
 ## License
 
 ### This project is licensed under the LGPL-3.0-only License.
 
 See the LICENSE.md file for details.
-
----
 
 ## Author
 
