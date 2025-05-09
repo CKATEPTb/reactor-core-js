@@ -2,10 +2,24 @@ import {EmitAction} from "@/sinks/BackpressureSink";
 import {Subscriber} from "@/subscriptions/Subscriber";
 import {Subscription} from "@/subscriptions/Subscription";
 
+/**
+ * Represents a generic publisher that can subscribe to a data stream.
+ * @template T - The type of data being published.
+ */
 export interface Publisher<T> {
+    /**
+     * Subscribes a subscriber to the publisher.
+     * @param {Subscriber<T>} subscriber - The subscriber to receive published data.
+     * @returns {Subscription} A subscription object to manage the subscriber's lifecycle.
+     */
     subscribe(subscriber: Subscriber<T>): Subscription
 }
 
+/**
+ * A publisher that supports backpressure handling.
+ * Ensures that the subscriber receives data only as requested, preventing data loss or overflow.
+ * @template T - The type of data being published.
+ */
 export class BackpressurePublisher<T> implements Publisher<T> {
     private backpressure: Array<EmitAction<T>> = []
     private subscriber?: Subscriber<T>
@@ -31,6 +45,13 @@ export class BackpressurePublisher<T> implements Publisher<T> {
         this.subscription.request(Number.MAX_SAFE_INTEGER)
     }
 
+    /**
+     * Subscribes a subscriber to this publisher.
+     * Throws an error if a subscriber is already registered (unicast).
+     * @param {Subscriber<T>} subscriber - The subscriber to receive data.
+     * @returns {Subscription} A subscription for managing data flow and lifecycle.
+     * @throws {Error} If the publisher already has a subscriber.
+     */
     public subscribe(subscriber: Subscriber<T>): Subscription {
         if (this.subscriber != null) throw new Error("Backpressure unicast publisher is not accepting new subscribers")
         this.subscriber = subscriber;
