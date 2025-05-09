@@ -1,0 +1,8 @@
+export interface Sink<T> {
+    next(value: T): void
+
+    error(error: Error): void
+
+    complete(): void
+}
+
