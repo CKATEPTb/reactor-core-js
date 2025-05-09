@@ -42,25 +42,40 @@ export abstract class ReplaySink<T> extends ManySink<T> {
 
     /**
      * Subscribes a subscriber to the sink.
-     * Replays all buffered events to the new subscriber upon subscription.
+     * Replays all buffered emits to the new subscriber upon subscription.
      * @param {Subscriber<T>} subscriber - The subscriber to add.
      * @returns {Subscription} The subscription object for managing the subscriber's lifecycle.
      */
     public override subscribe(subscriber: Subscriber<T>): Subscription {
-        const subscription = super.subscribe(subscriber)
-        this.replay(subscriber)
-        return subscription
-    }
-
-    /**
-     * Replays all buffered events to a newly subscribed subscriber.
-     * Ensures that late subscribers receive previously emitted values.
-     * @protected
-     * @param {Subscriber<T>} subscriber - The subscriber to replay events to.
-     */
-    protected replay(subscriber: Subscriber<T>) {
-        for (const action of this.buffer) {
-            this.emit(action, subscriber)
+        let left = this.buffer.length
+        if(left == 0) return super.subscribe(subscriber)
+        const replay = new ManySink<T>()
+        const i = replay.subscribe(subscriber)
+        for (const action of this.buffer) replay[action.emit](action.data as any)
+        const o = super.subscribe({
+            onNext: value => {
+                replay.next(value)
+            },
+            onError: error => {
+                replay.error(error)
+            },
+            onComplete: () => {
+                replay.complete()
+            }
+        })
+        return {
+            request(count: number) {
+                i.request(count)
+                left = left - count
+                if(left < 0) {
+                    o.request(left * -1)
+                    left = 0
+                }
+            },
+            unsubscribe() {
+                i.unsubscribe()
+                o.unsubscribe()
+            }
         }
     }
 

@@ -51,6 +51,7 @@ export class Mono<T> extends AbstractPipePublisher<T> {
                         subscription.unsubscribe()
                     }
                 })
+                return subscription
             }
         )
     }
@@ -108,7 +109,7 @@ export class Mono<T> extends AbstractPipePublisher<T> {
 
     /**
      * Subscribes to the Mono and triggers the provided callbacks on events.
-     * @param {Object} handlers - The event handlers.
+     * @param {() => Mono<T>} factory - The event handlers.
      * @returns {Subscription} The subscription object.
      */
     public static defer<T>(factory: () => Mono<T>): Mono<T> {

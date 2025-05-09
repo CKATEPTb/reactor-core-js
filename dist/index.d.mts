@@ -579,7 +579,7 @@ declare class Mono<T> extends AbstractPipePublisher<T> {
     static fromPromise<T>(promise: Promise<T>): Mono<T>;
     /**
      * Subscribes to the Mono and triggers the provided callbacks on events.
-     * @param {Object} handlers - The event handlers.
+     * @param {() => Mono<T>} factory - The event handlers.
      * @returns {Subscription} The subscription object.
      */
     static defer<T>(factory: () => Mono<T>): Mono<T>;
@@ -983,18 +983,11 @@ declare abstract class ReplaySink<T> extends ManySink<T> {
     complete(): void;
     /**
      * Subscribes a subscriber to the sink.
-     * Replays all buffered events to the new subscriber upon subscription.
+     * Replays all buffered emits to the new subscriber upon subscription.
      * @param {Subscriber<T>} subscriber - The subscriber to add.
      * @returns {Subscription} The subscription object for managing the subscriber's lifecycle.
      */
     subscribe(subscriber: Subscriber<T>): Subscription;
-    /**
-     * Replays all buffered events to a newly subscribed subscriber.
-     * Ensures that late subscribers receive previously emitted values.
-     * @protected
-     * @param {Subscriber<T>} subscriber - The subscriber to replay events to.
-     */
-    protected replay(subscriber: Subscriber<T>): void;
     /**
      * Stores an emitted action (next, error, complete) in the buffer.
      * @protected

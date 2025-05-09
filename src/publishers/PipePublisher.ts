@@ -144,9 +144,22 @@ export abstract class AbstractPipePublisher<T> implements PipePublisher<T> {
     public pipe<R>(producer: (onNext: (value: R) => void, onError: (error: Error) => void, onComplete: () => void) => void, onSubscribe?: (subscriber: Subscriber<R>) => void, onRequest?: (request: number) => void, onUnsubscribe?: () => void): PipePublisher<R> {
         const many = this.sinkType() == 'many';
         const sink = !many ? new OneSink<R>() : new ManySink<R>();
-        const unicast = new class A extends BackpressurePublisher<R> {
+        const unicast = new class _ extends BackpressurePublisher<R> {
             public override subscribe(subscriber: Subscriber<R>): Subscription {
                 onSubscribe?.(subscriber)
+                try {
+                    producer(value => {
+                            if (many && value == null) onRequest?.(1)
+                            else sink.next(value)
+                        },
+                        error => {
+                            sink.error(error)
+                            onRequest?.(1)
+                        },
+                        () => sink.complete())
+                } catch (error) {
+                    sink.error(error as Error)
+                }
                 const sub = super.subscribe(subscriber)
                 return {
                     request(count: number) {
@@ -160,19 +173,6 @@ export abstract class AbstractPipePublisher<T> implements PipePublisher<T> {
                 };
             }
         }(sink);
-        try {
-            producer(value => {
-                    if (many && value == null) onRequest?.(1)
-                    else sink.next(value)
-                },
-                error => {
-                    sink.error(error)
-                    onRequest?.(1)
-                },
-                () => sink.complete())
-        } catch (error) {
-            sink.error(error as Error)
-        }
         return this.wrap(unicast)
     }
 
@@ -296,6 +296,7 @@ export abstract class AbstractPipePublisher<T> implements PipePublisher<T> {
     }
 
     public doFinally(fn: () => void): PipePublisher<T> {
+        // todo срабатывает на текущем пайпе, вместо финального
         let sub: Subscription
         return this.pipe((onNext, onError, onComplete) =>
             sub = this.subscribe({
@@ -310,7 +311,7 @@ export abstract class AbstractPipePublisher<T> implements PipePublisher<T> {
     }
 
     public doOnSubscribe(fn: (subscriber: Subscriber<T>) => void): PipePublisher<T> {
-        // todo срабатывает без subscribe
+        // todo срабатывает на текущем пайпе, вместо финального
         let sub: Subscription
         return this.pipe((onNext, onError, onComplete) =>
             sub = this.subscribe({
