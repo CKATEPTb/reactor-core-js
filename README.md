@@ -43,7 +43,7 @@ yarn install CKATEPTb/reactor-core-js#production
 ### Basic Example: Using Mono and Flux
 
 ```typescript
-import {Mono, Flux, Sinks, Schedulers} from "@ckateptb/reactive-core-js";
+import {Mono, Flux, Sinks, Schedulers} from "@ckateptb/reactor-core-js";
 
 // Creating a Mono
 const mono = Mono.just(42);
@@ -117,7 +117,7 @@ Flux.from(sink)
 ### 1. Clone the repository:
 
 ```bash
-git clone https://github.com/CKATEPTb/reactive-core-js.git
+git clone https://github.com/CKATEPTb/reactor-core-js.git
 ```
 
 ### 2. Install dependencies::
