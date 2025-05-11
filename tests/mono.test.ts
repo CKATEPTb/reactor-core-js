@@ -325,4 +325,10 @@ describe('Mono Behavior', () => {
             mono.subscribe(createSubscriber('second'))
         }).toThrow("The completed sink is not accepting new emits.")
     })
+
+    test('Mono should not emit without request', () => {
+        Mono.just('done')
+            .subscribe(createSubscriber('noRequest'))
+        expect(results).toEqual([])
+    })
 })
