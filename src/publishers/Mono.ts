@@ -134,39 +134,30 @@ export class Mono<T> extends AbstractPipePublisher<T> {
      * @returns {Flux<R>} A new Flux containing the transformed values.
      */
     public flatMapMany<R>(mapper: (value: T) => Publisher<R>): Flux<R> {
-        return Flux.generate(sink => {
-            let subscription: Subscription | undefined
-            this.subscribe({
-                onNext: (val) => {
-                    subscription = mapper(val).subscribe({
-                        onNext(value: R) {
-                            sink.next(value)
-                        },
-                        onError(error: Error) {
-                            sink.error(error)
-                        },
-                        onComplete() {
-                            sink.complete()
-                        }
-                    })
-                },
-                onError: (error) => {
-                    sink.error(error)
-                },
-                onComplete: () => {
-                    if (subscription == null) sink.complete()
-                }
-            })
-                .request(1)
-            return {
-                request(count: number) {
-                    subscription?.request(count)
-                },
-                unsubscribe() {
-                    subscription?.unsubscribe()
-                }
-            } as Subscription
-        })
+        let pipeSub: Subscription | undefined
+        let pipeSub2: Subscription | undefined
+        return this.pipe((onNext, onError, onComplete) => {
+                pipeSub = this.subscribe({
+                    onNext: (val) => {
+                        pipeSub2 = mapper(val).subscribe({
+                            onNext,
+                            onError,
+                            onComplete
+                        })
+                    },
+                    onError,
+                    onComplete: () => {
+                        if (pipeSub2 == undefined) onComplete()
+                    }
+                })
+            }, request => {
+                pipeSub?.request(request)
+                pipeSub2?.request(request)
+            },
+            () => {
+                pipeSub?.unsubscribe()
+                pipeSub2?.unsubscribe()
+            }, Flux as any) as unknown as Flux<R>
     }
 
     /**
@@ -221,13 +212,13 @@ export class Mono<T> extends AbstractPipePublisher<T> {
      * Pipes the data through custom transformations.
      * @template R - The result type after processing.
      * @param {Function} producer - The function to produce new values.
-     * @param {Function} onSubscribe - Callback on subscription.
      * @param {Function} onRequest - Callback on request.
      * @param {Function} onUnsubscribe - Callback on unsubscribe.
+     * @param constructor - Constructor for generating new Publisher
      * @returns {Mono<R>} A new Mono with transformed data.
      */
-    public override pipe<R>(producer: (onNext: (value: R) => void, onError: (error: Error) => void, onComplete: () => void) => void, onRequest?: (request: number) => void, onUnsubscribe?: () => void): Mono<R> {
-        return super.pipe(producer, onRequest, onUnsubscribe) as Mono<R>;
+    public override pipe<R>(producer: (onNext: (value: R) => void, onError: (error: Error) => void, onComplete: () => void) => void, onRequest?: (request: number) => void, onUnsubscribe?: () => void, constructor?: new (publisher: Publisher<R>) => AbstractPipePublisher<R>): Mono<R> {
+        return super.pipe(producer, onRequest, onUnsubscribe, constructor) as Mono<R>;
     }
 
     /**
@@ -377,7 +368,7 @@ export class Mono<T> extends AbstractPipePublisher<T> {
         return super.subscribeOn(scheduler) as Mono<T>;
     }
 
-    protected sinkType(): 'one' | 'many' {
-        return 'one';
+    protected createSink(): Sink<T> & Publisher<T> {
+        return new OneSink();
     }
 }
