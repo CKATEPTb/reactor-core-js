@@ -143,7 +143,7 @@ export class Mono<T> extends AbstractPipePublisher<T> {
                          onComplete = () => {
                          }
                      } = {}): Subscription {
-        const subscription = this.publisher.subscribe({onNext, onError, onComplete})
+        const subscription = super.subscribe({onNext, onError, onComplete})
         subscription.request(1)
         return subscription
     }

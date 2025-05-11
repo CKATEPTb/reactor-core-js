@@ -531,26 +531,6 @@ export class Flux<T> extends AbstractPipePublisher<T> {
     }
 
     /**
-     * Subscribes to the Flux, allowing the handling of emitted values, errors, and completion.
-     *
-     * @param {Object} handlers - An object containing callback functions for onNext, onError, and onComplete.
-     * @param {Function} [handlers.onNext] - Called when a new item is emitted.
-     * @param {Function} [handlers.onError] - Called when an error occurs.
-     * @param {Function} [handlers.onComplete] - Called when the Flux completes.
-     * @returns {Subscription} The subscription object.
-     */
-    public subscribe({
-                         onNext = (value: T) => {
-                         },
-                         onError = (error: Error) => {
-                         },
-                         onComplete = () => {
-                         }
-                     } = {}): Subscription {
-        return this.publisher.subscribe({onNext, onError, onComplete});
-    }
-
-    /**
      * Pipes the data through custom transformations.
      * @template R - The result type after processing.
      * @param {Function} producer - The function to produce new values.

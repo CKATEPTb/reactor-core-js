@@ -136,10 +136,27 @@ export interface PipePublisher<T> extends Publisher<T> {
  * @template T - The type of data being published.
  */
 export abstract class AbstractPipePublisher<T> implements PipePublisher<T> {
+    private unsubscribeOnComplete = true
+
     protected constructor(protected readonly publisher: Publisher<T>) {
     }
 
-    public abstract subscribe(subscriber: Subscriber<T>): Subscription
+    public subscribe({
+                         onNext = (value: T) => {
+                         },
+                         onError = (error: Error) => {
+                         },
+                         onComplete = () => {
+                         }
+                     } = {}): Subscription {
+        const subscription = this.publisher.subscribe({
+            onNext, onError, onComplete: () => {
+                onComplete()
+                if (this.unsubscribeOnComplete) subscription.unsubscribe()
+            }
+        })
+        return subscription
+    }
 
     public pipe<R>(producer: (onNext: (value: R) => void, onError: (error: Error) => void, onComplete: () => void) => void, onSubscribe?: (subscriber: Subscriber<R>) => void, onRequest?: (request: number) => void, onUnsubscribe?: () => void): PipePublisher<R> {
         const many = this.sinkType() == 'many';
@@ -296,18 +313,18 @@ export abstract class AbstractPipePublisher<T> implements PipePublisher<T> {
     }
 
     public doFinally(fn: () => void): PipePublisher<T> {
-        // todo срабатывает на текущем пайпе, вместо финального
         let sub: Subscription
+        let called = false;
         return this.pipe((onNext, onError, onComplete) =>
             sub = this.subscribe({
-                onNext, onError, onComplete: () => {
-                    try {
-                        onComplete()
-                    } finally {
-                        fn()
-                    }
-                }
-            }), undefined, request => sub?.request(request), () => sub?.unsubscribe())
+                onNext, onError, onComplete
+            }), undefined, request => sub?.request(request), () => {
+            sub?.unsubscribe()
+            if (!called) {
+                called = true
+                fn()
+            }
+        })
     }
 
     public doOnSubscribe(fn: (subscriber: Subscriber<T>) => void): PipePublisher<T> {
@@ -346,6 +363,9 @@ export abstract class AbstractPipePublisher<T> implements PipePublisher<T> {
     protected abstract sinkType(): 'one' | 'many'
 
     private wrap<R>(publisher: Publisher<R>) {
-        return Reflect.construct((Reflect.getPrototypeOf(this) as PipePublisher<any>).constructor, [publisher])
+        this.unsubscribeOnComplete = false
+        const wrapped: AbstractPipePublisher<R> = Reflect.construct((Reflect.getPrototypeOf(this) as PipePublisher<any>).constructor, [publisher]);
+        wrapped.unsubscribeOnComplete = true
+        return wrapped
     }
 }

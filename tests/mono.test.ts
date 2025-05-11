@@ -177,11 +177,13 @@ describe('Mono Behavior', () => {
         expect(results).toEqual(['side: next', 'doOnNext: next', 'doOnNext: complete'])
     })
 
-    // TODO
-    // test('Mono doFinally should execute after completion', () => {
-    //     Mono.just('done').doFinally(() => results.push('finally')).subscribe(createSubscriber('doFinally'))
-    //     expect(results).toEqual(['doFinally: done', 'doFinally: complete', 'finally'])
-    // })
+    test('Mono doFinally should execute after completion', () => {
+        Mono.just('done')
+            .doFinally(() => results.push('finally'))
+            .doOnNext(value => results.push(value))
+            .subscribe(createSubscriber('doFinally'))
+        expect(results).toEqual(['done', 'doFinally: done', 'doFinally: complete', 'finally'])
+    })
 
     // TODO
     // test('Mono doOnSubscribe should execute on subscription', () => {
