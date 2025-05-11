@@ -161,6 +161,12 @@ interface PipePublisher<T> extends Publisher<T> {
      */
     doOnNext(fn: (value: T) => void): PipePublisher<T>;
     /**
+     * Executes a function when each error is emitted.
+     * @param {Function} fn - The function to execute on each error.
+     * @returns {PipePublisher<T>} A new pipe publisher.
+     */
+    doOnError(fn: (value: Error) => void): PipePublisher<T>;
+    /**
      * Executes a function when the stream completes.
      * @param {Function} fn - The function to execute on completion.
      * @returns {PipePublisher<T>} A new pipe publisher.
@@ -212,6 +218,7 @@ declare abstract class AbstractPipePublisher<T> implements PipePublisher<T> {
     onErrorContinue(predicate: (error: Error) => boolean): PipePublisher<T>;
     doFirst(fn: () => void): PipePublisher<T>;
     doOnNext(fn: (value: T) => void): PipePublisher<T>;
+    doOnError(fn: (value: Error) => void): PipePublisher<T>;
     doFinally(fn: () => void): PipePublisher<T>;
     doOnSubscribe(fn: (subscription: Subscription) => void): PipePublisher<T>;
     publishOn(scheduler: Scheduler): PipePublisher<T>;
@@ -488,6 +495,12 @@ declare class Flux<T> extends AbstractPipePublisher<T> {
      */
     doOnNext(fn: (value: T) => void): Flux<T>;
     /**
+     * Executes a function when each error is emitted.
+     * @param {Function} fn - The function to execute on each error.
+     * @returns {Flux<T>} A new Flux.
+     */
+    doOnError(fn: (value: Error) => void): Flux<T>;
+    /**
      * Executes a function when the stream completes.
      * @param {Function} fn - The function to execute on completion.
      * @returns {Flux<T>} A new Flux.
@@ -690,6 +703,12 @@ declare class Mono<T> extends AbstractPipePublisher<T> {
      * @returns {Mono<T>} A new Mono.
      */
     doOnNext(fn: (value: T) => void): Mono<T>;
+    /**
+     * Executes a function when each error is emitted.
+     * @param {Function} fn - The function to execute on each error.
+     * @returns {Mono<T>} A new Mono.
+     */
+    doOnError(fn: (value: Error) => void): Mono<T>;
     /**
      * Executes a function when the stream completes.
      * @param {Function} fn - The function to execute on completion.
