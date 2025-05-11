@@ -90,7 +90,7 @@ interface PipePublisher<T> extends Publisher<T> {
      * @param {Function} onUnsubscribe - Callback on unsubscribe.
      * @returns {PipePublisher<R>} A new pipe publisher with transformed data.
      */
-    pipe<R>(producer: (onNext: (value: R) => void, onError: (error: Error) => void, onComplete: () => void) => void, onSubscribe: (subscriber: Subscriber<R>) => void, onRequest: (request: number) => void, onUnsubscribe: () => void): PipePublisher<R>;
+    pipe<R>(producer: (onNext: (value: R) => void, onError: (error: Error) => void, onComplete: () => void) => void, onRequest: (request: number) => void, onUnsubscribe: () => void): PipePublisher<R>;
     /**
      * Transforms each emitted value using the given function.
      * @template R - The transformed data type.
@@ -171,7 +171,7 @@ interface PipePublisher<T> extends Publisher<T> {
      * @param {Function} fn - The function to execute on subscription.
      * @returns {PipePublisher<T>} A new pipe publisher.
      */
-    doOnSubscribe(fn: (subscriber: Subscriber<T>) => void): PipePublisher<T>;
+    doOnSubscribe(fn: (subscription: Subscription) => void): PipePublisher<T>;
     /**
      * Publishes values on a specified scheduler.
      * @param {Scheduler} scheduler - The scheduler to use.
@@ -192,9 +192,15 @@ interface PipePublisher<T> extends Publisher<T> {
  */
 declare abstract class AbstractPipePublisher<T> implements PipePublisher<T> {
     protected readonly publisher: Publisher<T>;
+    private unsubscribeOnComplete;
+    private onSubscribe?;
     protected constructor(publisher: Publisher<T>);
-    abstract subscribe(subscriber: Subscriber<T>): Subscription;
-    pipe<R>(producer: (onNext: (value: R) => void, onError: (error: Error) => void, onComplete: () => void) => void, onSubscribe?: (subscriber: Subscriber<R>) => void, onRequest?: (request: number) => void, onUnsubscribe?: () => void): PipePublisher<R>;
+    subscribe({ onNext, onError, onComplete }?: {
+        onNext?: ((value: T) => void) | undefined;
+        onError?: ((error: Error) => void) | undefined;
+        onComplete?: (() => void) | undefined;
+    }): Subscription;
+    pipe<R>(producer: (onNext: (value: R) => void, onError: (error: Error) => void, onComplete: () => void) => void, onRequest?: (request: number) => void, onUnsubscribe?: () => void): PipePublisher<R>;
     map<R>(fn: (value: T) => R): PipePublisher<R>;
     mapNotNull<R>(fn: (value: T) => R | null | undefined): PipePublisher<R>;
     flatMap<R>(fn: (value: T) => Publisher<R>): PipePublisher<R>;
@@ -207,7 +213,7 @@ declare abstract class AbstractPipePublisher<T> implements PipePublisher<T> {
     doFirst(fn: () => void): PipePublisher<T>;
     doOnNext(fn: (value: T) => void): PipePublisher<T>;
     doFinally(fn: () => void): PipePublisher<T>;
-    doOnSubscribe(fn: (subscriber: Subscriber<T>) => void): PipePublisher<T>;
+    doOnSubscribe(fn: (subscription: Subscription) => void): PipePublisher<T>;
     publishOn(scheduler: Scheduler): PipePublisher<T>;
     subscribeOn(scheduler: Scheduler): PipePublisher<T>;
     protected abstract sinkType(): 'one' | 'many';
@@ -403,20 +409,6 @@ declare class Flux<T> extends AbstractPipePublisher<T> {
      */
     thenEmpty(other: Publisher<any>): Mono<void>;
     /**
-     * Subscribes to the Flux, allowing the handling of emitted values, errors, and completion.
-     *
-     * @param {Object} handlers - An object containing callback functions for onNext, onError, and onComplete.
-     * @param {Function} [handlers.onNext] - Called when a new item is emitted.
-     * @param {Function} [handlers.onError] - Called when an error occurs.
-     * @param {Function} [handlers.onComplete] - Called when the Flux completes.
-     * @returns {Subscription} The subscription object.
-     */
-    subscribe({ onNext, onError, onComplete }?: {
-        onNext?: ((value: T) => void) | undefined;
-        onError?: ((error: Error) => void) | undefined;
-        onComplete?: (() => void) | undefined;
-    }): Subscription;
-    /**
      * Pipes the data through custom transformations.
      * @template R - The result type after processing.
      * @param {Function} producer - The function to produce new values.
@@ -425,7 +417,7 @@ declare class Flux<T> extends AbstractPipePublisher<T> {
      * @param {Function} onUnsubscribe - Callback on unsubscribe.
      * @returns {Flux<R>} A new Flux with transformed data.
      */
-    pipe<R>(producer: (onNext: (value: R) => void, onError: (error: Error) => void, onComplete: () => void) => void, onSubscribe?: (subscriber: Subscriber<R>) => void, onRequest?: (request: number) => void, onUnsubscribe?: () => void): Flux<R>;
+    pipe<R>(producer: (onNext: (value: R) => void, onError: (error: Error) => void, onComplete: () => void) => void, onRequest?: (request: number) => void, onUnsubscribe?: () => void): Flux<R>;
     /**
      * Transforms each emitted value using the given function.
      * @template R - The transformed data type.
@@ -506,7 +498,7 @@ declare class Flux<T> extends AbstractPipePublisher<T> {
      * @param {Function} fn - The function to execute on subscription.
      * @returns {Flux<T>} A new Flux.
      */
-    doOnSubscribe(fn: (subscriber: Subscriber<T>) => void): Flux<T>;
+    doOnSubscribe(fn: (subscription: Subscription) => void): Flux<T>;
     /**
      * Publishes values on a specified scheduler.
      * @param {Scheduler} scheduler - The scheduler to use.
@@ -584,20 +576,6 @@ declare class Mono<T> extends AbstractPipePublisher<T> {
      */
     static defer<T>(factory: () => Mono<T>): Mono<T>;
     /**
-     * Subscribes to the Mono, allowing the handling of emitted values, errors, and completion.
-     *
-     * @param {Object} handlers - An object containing callback functions for onNext, onError, and onComplete.
-     * @param {Function} [handlers.onNext] - Called when a new item is emitted.
-     * @param {Function} [handlers.onError] - Called when an error occurs.
-     * @param {Function} [handlers.onComplete] - Called when the Flux completes.
-     * @returns {Subscription} The subscription object.
-     */
-    subscribe({ onNext, onError, onComplete }?: {
-        onNext?: ((value: T) => void) | undefined;
-        onError?: ((error: Error) => void) | undefined;
-        onComplete?: (() => void) | undefined;
-    }): Subscription;
-    /**
      * Transforms the value emitted by the Mono into a Flux using the provided mapper function.
      * The resulting Flux can emit multiple items from the transformation of a single Mono item.
      *
@@ -642,7 +620,7 @@ declare class Mono<T> extends AbstractPipePublisher<T> {
      * @param {Function} onUnsubscribe - Callback on unsubscribe.
      * @returns {Mono<R>} A new Mono with transformed data.
      */
-    pipe<R>(producer: (onNext: (value: R) => void, onError: (error: Error) => void, onComplete: () => void) => void, onSubscribe?: (subscriber: Subscriber<R>) => void, onRequest?: (request: number) => void, onUnsubscribe?: () => void): Mono<R>;
+    pipe<R>(producer: (onNext: (value: R) => void, onError: (error: Error) => void, onComplete: () => void) => void, onRequest?: (request: number) => void, onUnsubscribe?: () => void): Mono<R>;
     /**
      * Transforms each emitted value using the given function.
      * @template R - The transformed data type.
@@ -723,7 +701,7 @@ declare class Mono<T> extends AbstractPipePublisher<T> {
      * @param {Function} fn - The function to execute on subscription.
      * @returns {Mono<T>} A new Mono.
      */
-    doOnSubscribe(fn: (subscriber: Subscriber<T>) => void): Mono<T>;
+    doOnSubscribe(fn: (subscription: Subscription) => void): Mono<T>;
     /**
      * Publishes values on a specified scheduler.
      * @param {Scheduler} scheduler - The scheduler to use.
