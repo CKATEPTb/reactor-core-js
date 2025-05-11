@@ -305,14 +305,15 @@ describe('Mono Behavior', () => {
 
     test('Mono#flatMapMany', () => {
         Mono.just('item')
-            .flatMapMany(value => Flux.range(1, 3)
+            .flatMapMany(value => Flux.range(1, value.length)
                 .map(num => `${value}-${num}`))
             .subscribe(createSubscriber('flatMapMany'))
-            .request(3)
+            .request(4)
         expect(results).toEqual([
             'flatMapMany: item-1',
             'flatMapMany: item-2',
             'flatMapMany: item-3',
+            'flatMapMany: item-4',
             'flatMapMany: complete'
         ])
     })
