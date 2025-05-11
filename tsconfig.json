@@ -19,7 +19,8 @@
     "skipLibCheck": true
   },
   "include": [
-    "src/**/*.ts"
+    "src/**/*.ts",
+    "jest.config.ts"
   ],
   "exclude": [
     "node_modules",
@@ -28,9 +29,6 @@
   "references": [
     {
       "path": "./tsconfig.tsup.json"
-    },
-    {
-      "path": "./tsconfig.jest.json"
     }
   ]
 }
