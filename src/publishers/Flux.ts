@@ -119,21 +119,14 @@ export class Flux<T> extends AbstractPipePublisher<T> {
      * @returns {Mono<T>} A Mono containing the first element.
      */
     public first(): Mono<T> {
-        return Mono.generate(sink => {
-            let sub: Subscription;
-            (sub = this.subscribe({
-                onNext(value: T) {
-                    sink.next(value)
-                    sub?.unsubscribe()
-                },
-                onError(error: Error) {
-                    sink.error(error)
-                },
-                onComplete() {
-                    sink.complete()
-                }
-            })).request(Number.MAX_SAFE_INTEGER)
-        })
+        let pipeSub: Subscription
+        return this.pipe((onNext, onError, onComplete) => {
+            pipeSub = this.subscribe({
+                onNext,
+                onError,
+                onComplete
+            })
+        }, _ => pipeSub?.request(1), () => pipeSub?.unsubscribe(), Mono as any) as unknown as Mono<T>
     }
 
     /**
@@ -141,19 +134,26 @@ export class Flux<T> extends AbstractPipePublisher<T> {
      * @returns {Mono<T>} A Mono containing the last element.
      */
     public last(): Mono<T> {
-        return Mono.generate(sink => {
+        let pipeSub: Subscription
+        return this.pipe((onNext, onError, onComplete) => {
             let lastValue: T | undefined
-            this.subscribe({
+            let lastError: Error | undefined
+            pipeSub = this.subscribe({
                 onNext(value: T): void {
+                    lastError = undefined
                     lastValue = value
                 },
-                onError: sink.error,
+                onError(error: Error): void {
+                    lastValue = undefined
+                    lastError = error
+                },
                 onComplete(): void {
-                    if (lastValue !== undefined) sink.next(lastValue)
-                    else sink.complete()
+                    if (lastValue != undefined) onNext(lastValue)
+                    else if (lastError != undefined) onError(lastError)
+                    else onComplete()
                 }
-            }).request(Number.MAX_SAFE_INTEGER)
-        })
+            })
+        }, _ => pipeSub?.request(Number.MAX_SAFE_INTEGER), () => pipeSub?.unsubscribe(), Mono as any) as unknown as Mono<T>
     }
 
     /**
@@ -177,29 +177,29 @@ export class Flux<T> extends AbstractPipePublisher<T> {
      * @param {boolean} [force=false] - Forces immediate collection.
      * @returns {Mono<T[]>} A Mono containing an array of collected items.
      */
-    public collect(force = false): Mono<T[]> {
-        return Mono.generate(sink => {
+    public collect(force: boolean = false): Mono<T[]> {
+        let pipeSub: Subscription
+        return this.pipe((onNext, onError, _) => {
             const buffer: T[] = []
-            const subscription = this.subscribe({
+            pipeSub = this.subscribe({
                 onNext(value: T): void {
                     buffer.push(value)
                 },
                 onError(error: Error): void {
-                    sink.error(error)
+                    onError(error)
                 },
-                onComplete(): void {
-                    sink.next(buffer)
+                onComplete() {
+                    onNext(buffer)
                 }
             })
-            subscription.request(Number.MAX_SAFE_INTEGER)
             if (force) new MicroScheduler().schedule(() => {
                 try {
-                    sink.next(buffer)
+                    onNext(buffer)
                 } catch (e) {
                 }
-                subscription.unsubscribe()
+                pipeSub.unsubscribe()
             })
-        })
+        }, _ => pipeSub?.request(Number.MAX_SAFE_INTEGER), () => pipeSub?.unsubscribe(), Mono as any) as unknown as Mono<T[]>
     }
 
     /**
@@ -217,7 +217,7 @@ export class Flux<T> extends AbstractPipePublisher<T> {
                 onError,
                 onComplete
             })
-        }, undefined, request => pipeSub?.request(request), () => pipeSub?.unsubscribe())
+        }, request => pipeSub?.request(request), () => pipeSub?.unsubscribe())
     }
 
     /**
@@ -250,7 +250,7 @@ export class Flux<T> extends AbstractPipePublisher<T> {
                 onError,
                 onComplete
             })
-        }, undefined, request => pipeSub?.request(request), () => pipeSub?.unsubscribe())
+        }, request => pipeSub?.request(request + 1), () => pipeSub?.unsubscribe())
     }
 
     /**
@@ -271,7 +271,7 @@ export class Flux<T> extends AbstractPipePublisher<T> {
                 onComplete
             })
             const sub2 = other.subscribe({
-                onNext(value: any): void {
+                onNext(_: any): void {
                     open = true
                 },
                 onError,
@@ -288,7 +288,7 @@ export class Flux<T> extends AbstractPipePublisher<T> {
                     sub2.unsubscribe()
                 }
             } as Subscription
-        }, undefined, request => pipeSub?.request(request), () => pipeSub?.unsubscribe())
+        }, request => pipeSub?.request(request + 1), () => pipeSub?.unsubscribe())
     }
 
     /**
@@ -309,7 +309,7 @@ export class Flux<T> extends AbstractPipePublisher<T> {
                 onError,
                 onComplete
             })
-        }, undefined, request => sub?.request(request), () => sub?.unsubscribe())
+        }, request => sub?.request(request + 1), () => sub?.unsubscribe())
     }
 
     /**
@@ -317,7 +317,7 @@ export class Flux<T> extends AbstractPipePublisher<T> {
      * @param {Function} comparator - A function to compare previous and current items.
      * @returns {Flux<T>} A new Flux with distinct consecutive items.
      */
-    public distinctUntilChanged(comparator: (previous: T, current: T) => boolean = (previous, current) => previous == current): Flux<T> {
+    public distinctUntilChanged(comparator: (previous: T, current: T) => boolean = (previous, current) => previous != current): Flux<T> {
         let sub: Subscription
         return this.pipe((onNext, onError, onComplete) => {
             let previous: T | null = null
@@ -334,7 +334,7 @@ export class Flux<T> extends AbstractPipePublisher<T> {
                     onComplete()
                 }
             })
-        }, undefined, request => sub?.request(request), () => sub?.unsubscribe())
+        }, request => sub?.request(request + 1), () => sub?.unsubscribe())
     }
 
     /**
@@ -365,7 +365,7 @@ export class Flux<T> extends AbstractPipePublisher<T> {
                     emit(() => onComplete())
                 }
             })
-        }, undefined, request => sub?.request(request), () => sub?.unsubscribe())
+        }, request => sub?.request(request), () => sub?.unsubscribe())
     }
 
     /**
@@ -404,7 +404,7 @@ export class Flux<T> extends AbstractPipePublisher<T> {
                     second?.unsubscribe()
                 }
             } as Subscription
-        }, undefined, request => pipeSub?.request(request), () => pipeSub?.unsubscribe())
+        }, request => pipeSub?.request(request), () => pipeSub?.unsubscribe())
     }
 
     /**
@@ -439,7 +439,7 @@ export class Flux<T> extends AbstractPipePublisher<T> {
                     second.unsubscribe()
                 }
             } as Subscription
-        }, undefined, request => pipeSub?.request(request), () => pipeSub?.unsubscribe())
+        }, request => pipeSub?.request(request), () => pipeSub?.unsubscribe())
     }
 
     /**
@@ -463,20 +463,19 @@ export class Flux<T> extends AbstractPipePublisher<T> {
      * @returns {Mono<A>} A Mono that emits the final accumulated value.
      */
     public reduceWith<A>(seedFactory: () => A, reducer: (acc: A, next: T) => A): Mono<A> {
-        return Mono.generate(sink => {
+        let pipeSub: Subscription
+        return this.pipe((onNext, onError, _) => {
             let acc = seedFactory()
-            this.subscribe({
-                onNext(value: T) {
+            pipeSub = this.subscribe({
+                onNext(value: T): void {
                     acc = reducer(acc, value)
                 },
-                onError(error: Error) {
-                    sink.error(error)
-                },
-                onComplete() {
-                    sink.next(acc)
+                onError,
+                onComplete(): void {
+                    onNext(acc)
                 }
-            }).request(Number.MAX_SAFE_INTEGER)
-        })
+            })
+        }, _ => pipeSub?.request(Number.MAX_SAFE_INTEGER), () => pipeSub?.unsubscribe(), Mono as any) as unknown as Mono<A>
     }
 
     /**
@@ -486,18 +485,15 @@ export class Flux<T> extends AbstractPipePublisher<T> {
      * @returns {Mono<void>} A Mono that completes when the Flux completes.
      */
     public then(): Mono<void> {
-        return Mono.generate(sink => {
-            this.subscribe({
-                onNext(value: T) {
+        let pipeSub: Subscription
+        return this.pipe((_, onError, onComplete) => {
+            pipeSub = this.subscribe({
+                onNext(_: T): void {
                 },
-                onError(error: Error) {
-                    sink.error(error)
-                },
-                onComplete() {
-                    sink.complete()
-                }
-            }).request(Number.MAX_SAFE_INTEGER)
-        })
+                onError,
+                onComplete
+            })
+        }, _ => pipeSub?.request(Number.MAX_SAFE_INTEGER), () => pipeSub?.unsubscribe(), Mono as any) as unknown as Mono<void>
     }
 
     /**
@@ -507,60 +503,22 @@ export class Flux<T> extends AbstractPipePublisher<T> {
      * @returns {Mono<void>} A Mono that completes after both Flux and the given Publisher complete.
      */
     public thenEmpty(other: Publisher<any>): Mono<void> {
-        return Mono.generate(sink => {
-            this.subscribe({
-                onNext(value: T) {
-                },
-                onError(error: Error) {
-                    sink.error(error)
-                },
-                onComplete() {
-                    other.subscribe({
-                        onNext(value: any) {
-                        },
-                        onError(error: Error) {
-                            sink.error(error)
-                        },
-                        onComplete() {
-                            sink.complete()
-                        }
-                    }).request(Number.MAX_SAFE_INTEGER)
-                }
-            }).request(Number.MAX_SAFE_INTEGER)
-        })
-    }
-
-    /**
-     * Subscribes to the Flux, allowing the handling of emitted values, errors, and completion.
-     *
-     * @param {Object} handlers - An object containing callback functions for onNext, onError, and onComplete.
-     * @param {Function} [handlers.onNext] - Called when a new item is emitted.
-     * @param {Function} [handlers.onError] - Called when an error occurs.
-     * @param {Function} [handlers.onComplete] - Called when the Flux completes.
-     * @returns {Subscription} The subscription object.
-     */
-    public subscribe({
-                         onNext = (value: T) => {
-                         },
-                         onError = (error: Error) => {
-                         },
-                         onComplete = () => {
-                         }
-                     } = {}): Subscription {
-        return this.publisher.subscribe({onNext, onError, onComplete});
+        return this.collect()
+            .flatMap(_ => other)
+            .flatMap(_ => Mono.empty())
     }
 
     /**
      * Pipes the data through custom transformations.
      * @template R - The result type after processing.
      * @param {Function} producer - The function to produce new values.
-     * @param {Function} onSubscribe - Callback on subscription.
      * @param {Function} onRequest - Callback on request.
      * @param {Function} onUnsubscribe - Callback on unsubscribe.
+     * @param constructor - Constructor for generating new Publisher
      * @returns {Flux<R>} A new Flux with transformed data.
      */
-    public override pipe<R>(producer: (onNext: (value: R) => void, onError: (error: Error) => void, onComplete: () => void) => void, onSubscribe?: (subscriber: Subscriber<R>) => void, onRequest?: (request: number) => void, onUnsubscribe?: () => void): Flux<R> {
-        return super.pipe(producer, onSubscribe, onRequest, onUnsubscribe) as Flux<R>;
+    public override pipe<R>(producer: (onNext: (value: R) => void, onError: (error: Error) => void, onComplete: () => void) => void, onRequest?: (request: number) => void, onUnsubscribe?: () => void, constructor?: new (publisher: Publisher<R>) => AbstractPipePublisher<R>): Flux<R> {
+        return super.pipe(producer, onRequest, onUnsubscribe, constructor) as Flux<R>;
     }
 
     /**
@@ -666,6 +624,15 @@ export class Flux<T> extends AbstractPipePublisher<T> {
     }
 
     /**
+     * Executes a function when each error is emitted.
+     * @param {Function} fn - The function to execute on each error.
+     * @returns {Flux<T>} A new Flux.
+     */
+    public override doOnError(fn: (value: Error) => void): Flux<T> {
+        return super.doOnError(fn) as Flux<T>;
+    }
+
+    /**
      * Executes a function when the stream completes.
      * @param {Function} fn - The function to execute on completion.
      * @returns {Flux<T>} A new Flux.
@@ -679,7 +646,7 @@ export class Flux<T> extends AbstractPipePublisher<T> {
      * @param {Function} fn - The function to execute on subscription.
      * @returns {Flux<T>} A new Flux.
      */
-    public override doOnSubscribe(fn: (subscriber: Subscriber<T>) => void): Flux<T> {
+    public override doOnSubscribe(fn: (subscription: Subscription) => void): Flux<T> {
         return super.doOnSubscribe(fn) as Flux<T>;
     }
 
@@ -701,7 +668,7 @@ export class Flux<T> extends AbstractPipePublisher<T> {
         return super.subscribeOn(scheduler) as Flux<T>;
     }
 
-    protected sinkType(): 'one' | 'many' {
-        return 'many';
+    protected createSink(): Sink<T> & Publisher<T> {
+        return new ManySink();
     }
 }

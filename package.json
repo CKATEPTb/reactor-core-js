@@ -1,6 +1,6 @@
 {
   "name": "@ckateptb/reactive-core-js",
-  "version": "1.0.1-aplha",
+  "version": "1.0.4-beta",
   "description": "The Reactive-Streams based implementation of Reactor-Core",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
@@ -14,6 +14,8 @@
   },
   "scripts": {
     "build": "tsup src/index.ts",
+    "start": "tsx src/start.ts",
+    "start:watch": "tsx watch src/start.ts",
     "test": "jest --config jest.config.ts",
     "test:watch": "jest --config jest.config.ts --watch"
   },
@@ -37,9 +39,10 @@
     "ts-jest": "^29.3.2",
     "ts-node": "^10.9.2",
     "tsup": "^8.4.0",
+    "tsx": "^4.19.4",
     "typescript": "^5.8.3"
   },
-  "packageManager": "pnpm@10.4.0+sha512.6b849d0787d97f8f4e1f03a9b8ff8f038e79e153d6f11ae539ae7c435ff9e796df6a862c991502695c7f9e8fac8aeafc1ac5a8dab47e36148d183832d886dd52",
+  "packageManager": "pnpm@10.10.0+sha512.d615db246fe70f25dcfea6d8d73dee782ce23e2245e3c4f6f888249fb568149318637dca73c2c5c8ef2a4ca0d5657fb9567188bfab47f566d1ee6ce987815c39",
   "files": [
     "dist"
   ]
