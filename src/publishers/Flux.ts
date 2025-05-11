@@ -646,6 +646,15 @@ export class Flux<T> extends AbstractPipePublisher<T> {
     }
 
     /**
+     * Executes a function when each error is emitted.
+     * @param {Function} fn - The function to execute on each error.
+     * @returns {Flux<T>} A new Flux.
+     */
+    public override doOnError(fn: (value: Error) => void): Flux<T> {
+        return super.doOnError(fn) as Flux<T>;
+    }
+
+    /**
      * Executes a function when the stream completes.
      * @param {Function} fn - The function to execute on completion.
      * @returns {Flux<T>} A new Flux.

@@ -333,6 +333,15 @@ export class Mono<T> extends AbstractPipePublisher<T> {
     }
 
     /**
+     * Executes a function when each error is emitted.
+     * @param {Function} fn - The function to execute on each error.
+     * @returns {Mono<T>} A new Mono.
+     */
+    public override doOnError(fn: (value: Error) => void): Mono<T> {
+        return super.doOnError(fn) as Mono<T>;
+    }
+
+    /**
      * Executes a function when the stream completes.
      * @param {Function} fn - The function to execute on completion.
      * @returns {Mono<T>} A new Mono.

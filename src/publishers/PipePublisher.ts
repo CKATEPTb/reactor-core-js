@@ -102,6 +102,13 @@ export interface PipePublisher<T> extends Publisher<T> {
     doOnNext(fn: (value: T) => void): PipePublisher<T>
 
     /**
+     * Executes a function when each error is emitted.
+     * @param {Function} fn - The function to execute on each error.
+     * @returns {PipePublisher<T>} A new pipe publisher.
+     */
+    doOnError(fn: (value: Error) => void): PipePublisher<T>
+
+    /**
      * Executes a function when the stream completes.
      * @param {Function} fn - The function to execute on completion.
      * @returns {PipePublisher<T>} A new pipe publisher.
@@ -310,6 +317,17 @@ export abstract class AbstractPipePublisher<T> implements PipePublisher<T> {
                     fn(value)
                     onNext(value)
                 }, onError, onComplete
+            }), request => sub?.request(request), () => sub?.unsubscribe())
+    }
+
+    public doOnError(fn: (value: Error) => void): PipePublisher<T> {
+        let sub: Subscription
+        return this.pipe((onNext, onError, onComplete) =>
+            sub = this.subscribe({
+                onNext, onError: error => {
+                    fn(error)
+                    onError(error)
+                }, onComplete
             }), request => sub?.request(request), () => sub?.unsubscribe())
     }
 
