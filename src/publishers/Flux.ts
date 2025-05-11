@@ -217,7 +217,7 @@ export class Flux<T> extends AbstractPipePublisher<T> {
                 onError,
                 onComplete
             })
-        }, undefined, request => pipeSub?.request(request), () => pipeSub?.unsubscribe())
+        }, request => pipeSub?.request(request), () => pipeSub?.unsubscribe())
     }
 
     /**
@@ -250,7 +250,7 @@ export class Flux<T> extends AbstractPipePublisher<T> {
                 onError,
                 onComplete
             })
-        }, undefined, request => pipeSub?.request(request), () => pipeSub?.unsubscribe())
+        }, request => pipeSub?.request(request), () => pipeSub?.unsubscribe())
     }
 
     /**
@@ -288,7 +288,7 @@ export class Flux<T> extends AbstractPipePublisher<T> {
                     sub2.unsubscribe()
                 }
             } as Subscription
-        }, undefined, request => pipeSub?.request(request), () => pipeSub?.unsubscribe())
+        }, request => pipeSub?.request(request), () => pipeSub?.unsubscribe())
     }
 
     /**
@@ -309,7 +309,7 @@ export class Flux<T> extends AbstractPipePublisher<T> {
                 onError,
                 onComplete
             })
-        }, undefined, request => sub?.request(request), () => sub?.unsubscribe())
+        }, request => sub?.request(request), () => sub?.unsubscribe())
     }
 
     /**
@@ -334,7 +334,7 @@ export class Flux<T> extends AbstractPipePublisher<T> {
                     onComplete()
                 }
             })
-        }, undefined, request => sub?.request(request), () => sub?.unsubscribe())
+        }, request => sub?.request(request), () => sub?.unsubscribe())
     }
 
     /**
@@ -365,7 +365,7 @@ export class Flux<T> extends AbstractPipePublisher<T> {
                     emit(() => onComplete())
                 }
             })
-        }, undefined, request => sub?.request(request), () => sub?.unsubscribe())
+        }, request => sub?.request(request), () => sub?.unsubscribe())
     }
 
     /**
@@ -404,7 +404,7 @@ export class Flux<T> extends AbstractPipePublisher<T> {
                     second?.unsubscribe()
                 }
             } as Subscription
-        }, undefined, request => pipeSub?.request(request), () => pipeSub?.unsubscribe())
+        }, request => pipeSub?.request(request), () => pipeSub?.unsubscribe())
     }
 
     /**
@@ -439,7 +439,7 @@ export class Flux<T> extends AbstractPipePublisher<T> {
                     second.unsubscribe()
                 }
             } as Subscription
-        }, undefined, request => pipeSub?.request(request), () => pipeSub?.unsubscribe())
+        }, request => pipeSub?.request(request), () => pipeSub?.unsubscribe())
     }
 
     /**
@@ -539,8 +539,8 @@ export class Flux<T> extends AbstractPipePublisher<T> {
      * @param {Function} onUnsubscribe - Callback on unsubscribe.
      * @returns {Flux<R>} A new Flux with transformed data.
      */
-    public override pipe<R>(producer: (onNext: (value: R) => void, onError: (error: Error) => void, onComplete: () => void) => void, onSubscribe?: (subscriber: Subscriber<R>) => void, onRequest?: (request: number) => void, onUnsubscribe?: () => void): Flux<R> {
-        return super.pipe(producer, onSubscribe, onRequest, onUnsubscribe) as Flux<R>;
+    public override pipe<R>(producer: (onNext: (value: R) => void, onError: (error: Error) => void, onComplete: () => void) => void, onRequest?: (request: number) => void, onUnsubscribe?: () => void): Flux<R> {
+        return super.pipe(producer, onRequest, onUnsubscribe) as Flux<R>;
     }
 
     /**
@@ -659,7 +659,7 @@ export class Flux<T> extends AbstractPipePublisher<T> {
      * @param {Function} fn - The function to execute on subscription.
      * @returns {Flux<T>} A new Flux.
      */
-    public override doOnSubscribe(fn: (subscriber: Subscriber<T>) => void): Flux<T> {
+    public override doOnSubscribe(fn: (subscription: Subscription) => void): Flux<T> {
         return super.doOnSubscribe(fn) as Flux<T>;
     }
 

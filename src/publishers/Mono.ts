@@ -6,7 +6,6 @@ import {Scheduler} from "@/schedulers/Scheduler";
 import {combine} from "@/utils";
 import {Flux} from "@/publishers/Flux";
 import {Subscription} from "@/subscriptions/Subscription";
-import {Subscriber} from "@/subscriptions/Subscriber";
 
 /**
  * Represents a Mono publisher that emits at most one item.
@@ -127,28 +126,6 @@ export class Mono<T> extends AbstractPipePublisher<T> {
     }
 
     /**
-     * Subscribes to the Mono, allowing the handling of emitted values, errors, and completion.
-     *
-     * @param {Object} handlers - An object containing callback functions for onNext, onError, and onComplete.
-     * @param {Function} [handlers.onNext] - Called when a new item is emitted.
-     * @param {Function} [handlers.onError] - Called when an error occurs.
-     * @param {Function} [handlers.onComplete] - Called when the Flux completes.
-     * @returns {Subscription} The subscription object.
-     */
-    public subscribe({
-                         onNext = (value: T) => {
-                         },
-                         onError = (error: Error) => {
-                         },
-                         onComplete = () => {
-                         }
-                     } = {}): Subscription {
-        const subscription = super.subscribe({onNext, onError, onComplete})
-        subscription.request(1)
-        return subscription
-    }
-
-    /**
      * Transforms the value emitted by the Mono into a Flux using the provided mapper function.
      * The resulting Flux can emit multiple items from the transformation of a single Mono item.
      *
@@ -180,6 +157,7 @@ export class Mono<T> extends AbstractPipePublisher<T> {
                     if (subscription == null) sink.complete()
                 }
             })
+                .request(1)
             return {
                 request(count: number) {
                     subscription?.request(count)
@@ -235,7 +213,7 @@ export class Mono<T> extends AbstractPipePublisher<T> {
                 onNext: (v) => value = v,
                 onError: reject,
                 onComplete: () => resolve(value)
-            })
+            }).request(1)
         })
     }
 
@@ -248,8 +226,8 @@ export class Mono<T> extends AbstractPipePublisher<T> {
      * @param {Function} onUnsubscribe - Callback on unsubscribe.
      * @returns {Mono<R>} A new Mono with transformed data.
      */
-    public override pipe<R>(producer: (onNext: (value: R) => void, onError: (error: Error) => void, onComplete: () => void) => void, onSubscribe?: (subscriber: Subscriber<R>) => void, onRequest?: (request: number) => void, onUnsubscribe?: () => void): Mono<R> {
-        return super.pipe(producer, onSubscribe, onRequest, onUnsubscribe) as Mono<R>;
+    public override pipe<R>(producer: (onNext: (value: R) => void, onError: (error: Error) => void, onComplete: () => void) => void, onRequest?: (request: number) => void, onUnsubscribe?: () => void): Mono<R> {
+        return super.pipe(producer, onRequest, onUnsubscribe) as Mono<R>;
     }
 
     /**
@@ -368,7 +346,7 @@ export class Mono<T> extends AbstractPipePublisher<T> {
      * @param {Function} fn - The function to execute on subscription.
      * @returns {Mono<T>} A new Mono.
      */
-    public override doOnSubscribe(fn: (subscriber: Subscriber<T>) => void): Mono<T> {
+    public override doOnSubscribe(fn: (subscription: Subscription) => void): Mono<T> {
         return super.doOnSubscribe(fn) as Mono<T>;
     }
 
