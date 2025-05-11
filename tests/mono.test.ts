@@ -13,61 +13,49 @@ describe('Mono Behavior', () => {
         onComplete: () => results.push(`${label}: complete`)
     })
 
-    test('Mono should emit a single value and complete', () => {
-        Mono.just('Hello')
-            .subscribe(createSubscriber('mono'))
+    test('Mono#just', () => {
+        Mono.just('just')
+            .subscribe(createSubscriber('just'))
             .request(1)
-        expect(results).toEqual(['mono: Hello', 'mono: complete'])
+        expect(results).toEqual(['just: just', 'just: complete'])
     })
 
-    test('Mono should complete without emitting any value', () => {
+    test('Mono#justOrEmpty', () => {
+        Mono.justOrEmpty('just')
+            .subscribe(createSubscriber('just'))
+            .request(1)
+        Mono.justOrEmpty(null)
+            .cast<string>()
+            .subscribe(createSubscriber('just'))
+            .request(1)
+        expect(results).toEqual(['just: just', 'just: complete', 'just: complete'])
+    })
+
+    test('Mono#empty', () => {
         Mono.empty<string>()
             .subscribe(createSubscriber('empty'))
             .request(1)
         expect(results).toEqual(['empty: complete'])
     })
 
-    test('Mono should emit an error and complete', () => {
-        Mono.error<string>(new Error('Something went wrong'))
+    test('Mono#error', () => {
+        Mono.error<string>(new Error('message'))
             .subscribe(createSubscriber('error'))
             .request(1)
-        expect(results).toEqual(['error: error: Something went wrong', 'error: complete'])
+        expect(results).toEqual(['error: error: message', 'error: complete'])
     })
 
-    test('Mono map should transform emitted value', () => {
-        Mono.just('hello').map(value => value.toUpperCase())
-            .subscribe(createSubscriber('mapped'))
+    test('Mono#fromPromise', (done) => {
+        Mono.fromPromise<string>(Promise.resolve('done'))
+            .doFinally(() => {
+                expect(results).toEqual(['fromPromise: done', 'fromPromise: complete'])
+                done()
+            })
+            .subscribe(createSubscriber('fromPromise'))
             .request(1)
-        expect(results).toEqual(['mapped: HELLO', 'mapped: complete'])
     })
 
-    test('Mono flatMap should map and flatten another Mono', () => {
-        Mono.just('hello').flatMap(value => Mono.just(value.toUpperCase()))
-            .subscribe(createSubscriber('flatMapped'))
-            .request(1)
-        expect(results).toEqual(['flatMapped: HELLO', 'flatMapped: complete'])
-    })
-
-    test('Mono switchIfEmpty should emit alternative value', () => {
-        Mono.empty<string>().switchIfEmpty(Mono.just('default'))
-            .subscribe(createSubscriber('switchIfEmpty'))
-            .request(1)
-        expect(results).toEqual(['switchIfEmpty: default', 'switchIfEmpty: complete'])
-    })
-
-    test('Mono should not allow multiple subscriptions', () => {
-        const mono = Mono.just('unique')
-        mono.subscribe(createSubscriber('first'))
-            .request(1)
-
-        expect(() => {
-            mono.subscribe(createSubscriber('second'))
-        }).toThrow("The completed sink is not accepting new emits.")
-
-        expect(results).toEqual(['first: unique', 'first: complete'])
-    })
-
-    test('Mono should allow defer for lazy evaluation', () => {
+    test('Mono#defer', () => {
         let called = false
         const mono = Mono.defer(() => {
             called = true
@@ -80,148 +68,176 @@ describe('Mono Behavior', () => {
         expect(results).toEqual(['deferred: deferred', 'deferred: complete'])
     })
 
-    test('Mono zipWith should combine two Mono values', () => {
-        Mono.just('A').zipWith(Mono.just('B')).map(String)
-            .subscribe(createSubscriber('zipped'))
-            .request(1)
-        expect(results).toEqual(['zipped: A,B', 'zipped: complete'])
-    })
-
-    test('Mono from should emit the value from another publisher', () => {
-        Mono.from(Flux.range(1, 5)).map(String)
+    test('Mono#from', () => {
+        Mono.from(Flux.range(1, 5))
+            .map(String)
             .subscribe(createSubscriber('from'))
             .request(1)
         expect(results).toEqual(['from: 1', 'from: complete'])
     })
 
-    test('Mono justOrEmpty should emit value or complete if null', () => {
-        Mono.justOrEmpty('value').subscribe(createSubscriber('present'))
+    test('Mono#map', () => {
+        Mono.just('hello')
+            .map(value => value.toUpperCase())
+            .subscribe(createSubscriber('map'))
             .request(1)
-        Mono.justOrEmpty(null).cast<string>().subscribe(createSubscriber('absent'))
-            .request(1)
-        expect(results).toEqual(['present: value', 'present: complete', 'absent: complete'])
+        expect(results).toEqual(['map: HELLO', 'map: complete'])
     })
 
-    test('Mono fromPromise should emit resolved value', () => {
-        Mono.fromPromise(Promise.resolve('async value')).subscribe(createSubscriber('promise'))
+    test('Mono#mapNotNull', () => {
+        Mono.just('hello')
+            .mapNotNull(value => value.toUpperCase())
+            .subscribe(createSubscriber('map'))
             .request(1)
-        Schedulers.micro().schedule(() => expect(results).toEqual(['promise: async value', 'promise: complete']))
-    })
-
-    test('Mono flatMapMany should convert Mono to Flux', () => {
-        Mono.just('item')
-            .flatMapMany(value => Flux.range(1, 3).map(num => `${value}-${num}`))
-            .subscribe(createSubscriber('flatMapMany')).request(3)
-        expect(results).toEqual([
-            'flatMapMany: item-1',
-            'flatMapMany: item-2',
-            'flatMapMany: item-3',
-            'flatMapMany: complete'
-        ])
-    })
-
-    test('Mono zipWhen should combine with another Mono', () => {
-        Mono.just('A').zipWhen(() => Mono.just('B')).map(String)
-            .subscribe(createSubscriber('zipWhen'))
-            .request(1)
-        expect(results).toEqual(['zipWhen: A,B', 'zipWhen: complete'])
-    })
-
-    test('Mono hasElement should check presence of value', () => {
-        Mono.just('exists').hasElement().map(String).subscribe(createSubscriber('hasElement'))
-            .request(1)
-        Mono.empty().hasElement().map(String).subscribe(createSubscriber('noElement'))
-            .request(1)
-        expect(results).toEqual([
-            'hasElement: true', 'hasElement: complete',
-            'noElement: false', 'noElement: complete'
-        ])
-    })
-
-    test('Mono toPromise should convert to Promise', async () => {
-        expect(await Mono.just('async-promise').toPromise()).toBe('async-promise')
-    })
-
-    test('Mono mapNotNull should filter out null values', () => {
-        Mono.just('hello').mapNotNull(() => null)
+        Mono.just('hello')
+            .mapNotNull(_ => null)
             .cast<string>()
-            .subscribe(createSubscriber('mapNotNull'))
+            .subscribe(createSubscriber('map'))
             .request(1)
-        expect(results).toEqual(['mapNotNull: complete'])
+        expect(results).toEqual(['map: HELLO', 'map: complete', 'map: complete'])
     })
 
-    test('Mono filter should pass values matching predicate', () => {
-        Mono.just(5).filter(value => value > 3).map(String)
+    test('Mono#flatMap', () => {
+        Mono.just('hello')
+            .flatMap(value => Mono.just(value.toUpperCase()))
+            .subscribe(createSubscriber('flatMap'))
+            .request(1)
+        expect(results).toEqual(['flatMap: HELLO', 'flatMap: complete'])
+    })
+
+    test('Mono#filter', () => {
+        Mono.just('hello')
+            .filter(value => value == 'hello')
             .subscribe(createSubscriber('filter'))
             .request(1)
-        expect(results).toEqual(['filter: 5', 'filter: complete'])
-        Mono.just(5).filter(value => value < 3).map(String)
-            .subscribe(createSubscriber('empty'))
+        Mono.just('hello')
+            .filter(value => value != 'hello')
+            .subscribe(createSubscriber('filter'))
             .request(1)
-        expect(results).toEqual(['filter: 5', 'filter: complete', 'empty: complete'])
+        expect(results).toEqual(['filter: hello', 'filter: complete', 'filter: complete'])
     })
 
-    test('Mono filterWhen should pass only when predicate returns true', () => {
-        Mono.just(5).filterWhen(() => Mono.just(true)).map(String)
+    test('Mono#filterWhen', () => {
+        Mono.just('hello')
+            .filterWhen(value => Mono.just(value == 'hello'))
             .subscribe(createSubscriber('filterWhen'))
             .request(1)
-        expect(results).toEqual(['filterWhen: 5', 'filterWhen: complete'])
-        Mono.just(5).filterWhen(() => Mono.just(false)).map(String)
-            .subscribe(createSubscriber('empty'))
+        Mono.just('hello')
+            .filterWhen(value => Mono.just(value != 'hello'))
+            .subscribe(createSubscriber('filterWhen'))
             .request(1)
-        expect(results).toEqual(['filterWhen: 5', 'filterWhen: complete', 'empty: complete'])
+        expect(results).toEqual(['filterWhen: hello', 'filterWhen: complete', 'filterWhen: complete'])
     })
 
-    test('Mono onErrorReturn should replace error with fallback', () => {
-        Mono.error<string>(new Error('fail')).onErrorReturn(Mono.just('fallback'))
+    test('Mono#cast (should return some publisher)', () => {
+        const mono = Mono.just(5);
+        results.push(String(mono === mono.cast<number>()))
+        expect(results).toEqual(['true'])
+    })
+
+    test('Mono#switchIfEmpty', () => {
+        Mono.empty<string>()
+            .switchIfEmpty(Mono.just('default'))
+            .subscribe(createSubscriber('switchIfEmpty'))
+            .request(1)
+        expect(results).toEqual(['switchIfEmpty: default', 'switchIfEmpty: complete'])
+    })
+
+    test('Mono#onErrorReturn', () => {
+        Mono.error<string>(new Error())
+            .onErrorReturn(Mono.just('default'))
             .subscribe(createSubscriber('onErrorReturn'))
             .request(1)
-        expect(results).toEqual(['onErrorReturn: fallback', 'onErrorReturn: complete'])
+        expect(results).toEqual(['onErrorReturn: default', 'onErrorReturn: complete'])
     })
 
-    test('Mono onErrorContinue should ignore error based on predicate', () => {
-        Mono.error<string>(new Error('ignore')).onErrorContinue(() => true)
+    test('Mono#onErrorContinue', () => {
+        Mono.error<string>(new Error('message'))
+            .onErrorContinue(error => error.message == 'message')
             .subscribe(createSubscriber('onErrorContinue'))
             .request(1)
-        expect(results).toEqual(['onErrorContinue: complete'])
-    })
-
-    test('Mono doFirst should execute action before emission', () => {
-        Mono.just('first')
-            .doOnNext(() => results.push(`next`)) // некст срабатывает раньше чем doFirst, проблема в реализации doFirst, можешь поправить?
-            .doFirst(() => results.push('before'))
-            .subscribe(createSubscriber('doFirst'))
+        Mono.error<string>(new Error('message'))
+            .onErrorContinue(error => error.message != 'message')
+            .subscribe(createSubscriber('onErrorContinue'))
             .request(1)
-        expect(results).toEqual(['before', 'next', 'doFirst: first', 'doFirst: complete'])
+        expect(results).toEqual(['onErrorContinue: complete', 'onErrorContinue: error: message', 'onErrorContinue: complete'])
     })
 
-    test('Mono doOnNext should execute action on emission', () => {
-        Mono.just('next')
-            .doOnNext(value => results.push(`side: ${value}`))
+    test('Mono#doOnNext', () => {
+        Mono.just<string>('done')
+            .doOnNext(value => results.push(value))
             .subscribe(createSubscriber('doOnNext'))
             .request(1)
-        expect(results).toEqual(['side: next', 'doOnNext: next', 'doOnNext: complete'])
+        expect(results).toEqual(['done', 'doOnNext: done', 'doOnNext: complete'])
     })
 
-    test('Mono doFinally should execute after completion', () => {
-        Mono.just('done')
+    test('Mono#doOnError', () => {
+        Mono.error<string>(new Error('message'))
+            .doOnError(value => results.push(value.message))
+            .subscribe(createSubscriber('doOnError'))
+            .request(1)
+        expect(results).toEqual(['message', 'doOnError: error: message', 'doOnError: complete'])
+    })
+
+    test('Mono#doFirst', () => {
+        Mono.just<string>('done')
+            .doFirst(() => results.push('first_1'))
+            .doOnNext(value => results.push(value))
+            .doFirst(() => results.push('first_2'))
+            .subscribe(createSubscriber('doFirst'))
+            .request(1)
+        expect(results).toEqual(['first_2', 'first_1', 'done', 'doFirst: done', 'doFirst: complete'])
+        results = []
+        Mono.error<string>(new Error('message'))
+            .doFirst(() => results.push('first_1'))
+            .doFirst(() => results.push('first_2'))
+            .subscribe(createSubscriber('doFirst'))
+            .request(1)
+        expect(results).toEqual(['first_2', 'first_1', 'doFirst: error: message', 'doFirst: complete'])
+        results = []
+        Mono.empty<string>()
+            .doFirst(() => results.push('first_1'))
+            .doFirst(() => results.push('first_2'))
+            .subscribe(createSubscriber('doFirst'))
+            .request(1)
+        expect(results).toEqual(['first_2', 'first_1', 'doFirst: complete'])
+    })
+
+    test('Mono#doFinally', () => {
+        Mono.just<string>('done')
+            .doOnNext(value => results.push(value))
             .doFinally(() => results.push('finally'))
             .doOnNext(value => results.push(value))
             .subscribe(createSubscriber('doFinally'))
             .request(1)
-        expect(results).toEqual(['done', 'doFinally: done', 'doFinally: complete', 'finally'])
-    })
-
-    test('Mono doOnSubscribe should execute on subscription', () => {
-        Mono.just('subscribed')
-            .doOnSubscribe(() => results.push('subscribed'))
-            .doOnNext(value => results.push('next'))
-            .subscribe(createSubscriber('doOnSubscribe'))
+        expect(results).toEqual(['done', 'done', 'doFinally: done', 'doFinally: complete', 'finally'])
+        results = []
+        Mono.error<string>(new Error('message'))
+            .doFinally(() => results.push('finally'))
+            .subscribe(createSubscriber('doFinally'))
             .request(1)
-        expect(results).toEqual(['subscribed', 'next', 'doOnSubscribe: subscribed', 'doOnSubscribe: complete'])
+        expect(results).toEqual(['doFinally: error: message', 'doFinally: complete', 'finally'])
+        results = []
+        Mono.empty<string>()
+            .doFinally(() => results.push('finally'))
+            .subscribe(createSubscriber('doFinally'))
+            .request(1)
+        expect(results).toEqual(['doFinally: complete', 'finally'])
     })
 
-    test('Mono publishOn should change emission context', (done) => {
+    test('Mono#doOnSubscribe', () => {
+        Mono.just<string>('done')
+            .doOnNext(value => results.push(value))
+            .doOnNext(value => results.push(value))
+            .doOnSubscribe(subscription => {
+                subscription.request(1)
+                results.push('onSubscribe')
+            })
+            .subscribe(createSubscriber('doOnSubscribe'))
+        expect(results).toEqual(['done', 'done', 'doOnSubscribe: done', 'doOnSubscribe: complete', 'onSubscribe'])
+    })
+
+    test('Mono#publishOn', (done) => {
         Mono.just('async')
             .publishOn(Schedulers.macro())
             .subscribe(createSubscriber('publishOn'))
@@ -232,7 +248,8 @@ describe('Mono Behavior', () => {
             done()
         })
     })
-    test('Mono subscribeOn should change subscription context', (done) => {
+
+    test('Mono#subscribeOn', (done) => {
         Mono.just('async-sub')
             .subscribeOn(Schedulers.micro())
             .subscribe(createSubscriber('subscribeOn'))
@@ -242,5 +259,69 @@ describe('Mono Behavior', () => {
             expect(results).toEqual(['subscribeOn: async-sub', 'subscribeOn: complete'])
             done()
         })
+    })
+
+    test('Mono#zipWith', () => {
+        Mono.just('A')
+            .zipWith(Mono.just('B'))
+            .map(String)
+            .subscribe(createSubscriber('zipWith'))
+            .request(1)
+        expect(results).toEqual(['zipWith: A,B', 'zipWith: complete'])
+    })
+
+    test('Mono#zipWhen', () => {
+        Mono.just('A')
+            .zipWhen(value => Mono.just(value))
+            .map(String)
+            .subscribe(createSubscriber('zipWhen'))
+            .request(1)
+        expect(results).toEqual(['zipWhen: A,A', 'zipWhen: complete'])
+    })
+
+    test('Mono#hasElement', () => {
+        Mono.just('exists')
+            .hasElement()
+            .map(String)
+            .subscribe(createSubscriber('hasElement'))
+            .request(1)
+        Mono.empty()
+            .hasElement()
+            .map(String)
+            .subscribe(createSubscriber('hasElement'))
+            .request(1)
+        expect(results).toEqual([
+            'hasElement: true', 'hasElement: complete',
+            'hasElement: false', 'hasElement: complete'
+        ])
+    })
+
+    test('Mono#toPromise', async () => {
+        expect(await Mono.just('async-promise').toPromise()).toBe('async-promise')
+        await Mono.error(new Error('promise-error')).toPromise()
+            .catch((reason: Error) => results.push(reason.message))
+        expect(results).toEqual(['promise-error'])
+    })
+
+    test('Mono#flatMapMany', () => {
+        Mono.just('item')
+            .flatMapMany(value => Flux.range(1, 3)
+                .map(num => `${value}-${num}`))
+            .subscribe(createSubscriber('flatMapMany'))
+            .request(3)
+        expect(results).toEqual([
+            'flatMapMany: item-1',
+            'flatMapMany: item-2',
+            'flatMapMany: item-3',
+            'flatMapMany: complete'
+        ])
+    })
+
+    test('Mono should not allow multiple subscriptions', () => {
+        const mono = Mono.just('unique')
+        mono.subscribe(createSubscriber('first'))
+        expect(() => {
+            mono.subscribe(createSubscriber('second'))
+        }).toThrow("The completed sink is not accepting new emits.")
     })
 })
