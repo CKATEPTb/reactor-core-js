@@ -1112,4 +1112,39 @@ declare const Schedulers: {
     delay: (ms: number) => DelayScheduler;
 };
 
-export { type CancellableScheduler, Flux, ManySink, Mono, OneSink, type Publisher, ReplayAllSink, ReplayLatestSink, ReplayLimitSink, type Scheduler, Schedulers, type Sink, Sinks, type Subscriber, type Subscription };
+/**
+ * Creates a reactive subject that holds a single mutable value and supports subscriptions.
+ * The subject allows updating the value and notifying subscribers of changes.
+ *
+ * @template T - The type of the value held by the subject.
+ * @param {T} value - The initial value of the subject.
+ * @returns {Object} An object with methods to interact with the subject.
+ * @property {function(T): void} next - Updates the current value and notifies subscribers.
+ * @property {function((current: T) => T): void} update - Updates the current value using a function and notifies subscribers.
+ * @property {function(): T} get - Returns the current value of the subject.
+ * @property {function(Subscriber<T>): Subscription} subscribe - Subscribes to changes and returns a subscription.
+ *
+ * @example
+ * const count = subject(0);
+ * count.next(1);  // Update the value to 1
+ * count.update(prev => prev + 1);  // Increment the value
+ * console.log(count.get());  // Output: 2
+ * const subscription = count.subscribe({
+ *   onNext: value => console.log('New value:', value),
+ *   onComplete: () => console.log('Completed')
+ * });
+ * subscription.request(1);  // Request the next value
+ * subscription.unsubscribe();  // Stop receiving updates
+ */
+declare function subject<T>(value: T): {
+    next(value: T): void;
+    update(fn: (current: T) => T): void;
+    get(): T;
+    subscribe({ onNext, onError, onComplete }?: {
+        onNext?: ((value: T) => void) | undefined;
+        onError?: ((error: Error) => void) | undefined;
+        onComplete?: (() => void) | undefined;
+    }): Subscription;
+};
+
+export { type CancellableScheduler, Flux, ManySink, Mono, OneSink, type Publisher, ReplayAllSink, ReplayLatestSink, ReplayLimitSink, type Scheduler, Schedulers, type Sink, Sinks, type Subscriber, type Subscription, subject };

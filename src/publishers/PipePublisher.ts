@@ -171,6 +171,7 @@ export abstract class AbstractPipePublisher<T> implements PipePublisher<T> {
     }
 
     public pipe<R>(producer: (onNext: (value: R) => void, onError: (error: Error) => void, onComplete: () => void) => void, onRequest?: (request: number) => void, onUnsubscribe?: () => void, constructor?: new (publisher: Publisher<R>) => AbstractPipePublisher<R>): PipePublisher<R> {
+        // todo сделать так, чтобы конечный пайп мог быть inline, для большего удобства
         const sink = Reflect.construct(constructor || Reflect.getPrototypeOf(this)!.constructor, [null]).createSink();
         const many = !(sink instanceof OneSink)
         const unicast = new class _ extends BackpressurePublisher<R> {
