@@ -219,18 +219,34 @@ export abstract class AbstractPipePublisher<T> implements PipePublisher<T> {
     }
 
     public flatMap<R>(fn: (value: T) => Publisher<R>): PipePublisher<R> {
-        let sub: Subscription;
-        let req = 0
-        return this.pipe((onNext, onError, onComplete) =>
-                sub = this.subscribe({
-                    onNext: (value) => {
-                        fn(value).subscribe({
-                            onNext, onError, onComplete: () => this.canEmitMany() ? () => {
-                            } : onComplete
-                        }).request(req)
-                    }, onError, onComplete
-                })
-            , request => sub?.request(req = request), () => sub?.unsubscribe())
+        // TODO избавится от Promise и сделать синхронно
+        let subscriptions: Subscription[] = [];
+        let promises: Promise<void>[] = []
+        return this.pipe((onNext, onError, onComplete) => {
+            const sub = this.subscribe({
+                onNext: (value) => {
+                    promises.push(new Promise(resolve => {
+                            let s
+                            subscriptions.push(s = fn(value).subscribe({
+                                onNext: value => {
+                                    onNext(value)
+                                }, onError, onComplete: () => {
+                                    if (this.canEmitMany()) {
+                                        sub.request(1)
+                                    }
+                                    resolve()
+                                }
+                            }))
+                            s.request(Number.MAX_SAFE_INTEGER)
+                        }
+                    ))
+                }, onError, onComplete: () => {
+                    Promise.all(promises).then(onComplete)
+                }
+            })
+            subscriptions.push(sub)
+            return sub
+        }, request => subscriptions[0]?.request(request), () => subscriptions.forEach(sub => sub.unsubscribe()))
     }
 
     public filter(predicate: (value: T) => boolean): PipePublisher<T> {
