@@ -1081,6 +1081,28 @@ declare class DelayScheduler implements CancellableScheduler {
 }
 
 /**
+ * A scheduler that executes tasks multiple times with a specified interval.
+ * Implements the `CancellableScheduler` interface, allowing scheduled tasks to be canceled.
+ */
+declare class IntervalScheduler implements CancellableScheduler {
+    private readonly interval;
+    /**
+     * Creates a new IntervalScheduler.
+     * @param {number} delay - The interval duration in milliseconds.
+     */
+    constructor(delay: number);
+    /**
+     * Schedules a task to be executed multiple times with a specified interval.
+     * Returns an object with a cancel method to clear the timeout.
+     * @param {Function} task - The task function to be executed.
+     * @returns {Object} An object with a `cancel` method to stop the execution.
+     */
+    schedule(task: () => void): {
+        cancel: () => void;
+    };
+}
+
+/**
  * A collection of commonly used schedulers for task execution.
  * Provides methods to create instances of various scheduler types.
  */
@@ -1110,6 +1132,13 @@ declare const Schedulers: {
      * @returns {DelayScheduler} An instance of DelayScheduler.
      */
     delay: (ms: number) => DelayScheduler;
+    /**
+     * Creates an instance of `IntervalScheduler` with a specified interval.
+     * Executes tasks multiple times with a given interval using `setInterval`.
+     * @param {number} ms - The interval in milliseconds between task executing.
+     * @returns {IntervalScheduler} An instance of IntervalScheduler.
+     */
+    interval: (ms: number) => IntervalScheduler;
 };
 
 /**

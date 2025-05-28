@@ -1,6 +1,6 @@
 {
   "name": "@ckateptb/reactive-core-js",
-  "version": "1.0.6-beta",
+  "version": "1.0.7-beta",
   "description": "The Reactive-Streams based implementation of Reactor-Core",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
