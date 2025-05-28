@@ -1,4 +1,4 @@
-The **reactor-core-js** library is a TypeScript-based implementation of
+The **reactor-core-ts** library is a TypeScript-based implementation of
 reactive streams, inspired by **reactor-core**. It provides powerful tools
 for building reactive systems with backpressure support, designed for
 high-performance data processing and efficient flow control.
@@ -15,19 +15,19 @@ This library supports a wide range of reactive patterns, including:
 To install the package using **npm**:
 
 ```bash
-npm install CKATEPTb/reactor-core-js#production
+npm install reactor-core-ts
 ```
 
 To install the package using **pnpm**:
 
 ```bash
-pnpm install CKATEPTb/reactor-core-js#production
+pnpm install reactor-core-ts
 ```
 
 To install the package using **yarn**:
 
 ```bash
-yarn install CKATEPTb/reactor-core-js#production
+yarn install reactor-core-ts
 ```
 
 ## Features
@@ -117,7 +117,7 @@ Flux.from(sink)
 ### 1. Clone the repository:
 
 ```bash
-git clone https://github.com/CKATEPTb/reactor-core-js.git
+git clone https://github.com/CKATEPTb/reactor-core-ts.git
 ```
 
 ### 2. Install dependencies::
