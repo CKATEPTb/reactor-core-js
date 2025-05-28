@@ -2,6 +2,7 @@ import {ImmediateScheduler} from "@/schedulers/ImmediateScheduler";
 import {MicroScheduler} from "@/schedulers/MicroScheduler";
 import {MacroScheduler} from "@/schedulers/MacroScheduler";
 import {DelayScheduler} from "@/schedulers/DelayScheduler";
+import {IntervalScheduler} from "@/schedulers/IntervalScheduler";
 
 export * from '@/schedulers/Scheduler'
 
@@ -34,5 +35,12 @@ export const Schedulers = {
      * @param {number} ms - The delay in milliseconds before executing the task.
      * @returns {DelayScheduler} An instance of DelayScheduler.
      */
-    delay: (ms: number): DelayScheduler => new DelayScheduler(ms)
+    delay: (ms: number): DelayScheduler => new DelayScheduler(ms),
+    /**
+     * Creates an instance of `IntervalScheduler` with a specified interval.
+     * Executes tasks multiple times with a given interval using `setInterval`.
+     * @param {number} ms - The interval in milliseconds between task executing.
+     * @returns {IntervalScheduler} An instance of IntervalScheduler.
+     */
+    interval: (ms: number): IntervalScheduler => new IntervalScheduler(ms)
 }
