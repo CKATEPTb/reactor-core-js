@@ -1,6 +1,6 @@
 {
-  "name": "@ckateptb/reactive-core-js",
-  "version": "1.0.7-beta",
+  "name": "reactor-core-ts",
+  "version": "1.0.8-beta",
   "description": "The Reactive-Streams based implementation of Reactor-Core",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
@@ -13,7 +13,7 @@
     }
   },
   "scripts": {
-    "build": "tsup src/index.ts",
+    "build": "pnpm run test && tsup src/index.ts",
     "start": "tsx src/start.ts",
     "start:watch": "tsx watch src/start.ts",
     "test": "jest --config jest.config.ts",
@@ -21,12 +21,16 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/CKATEPTb/reactive-core-js.git"
+    "url": "https://github.com/CKATEPTb/reactive-core-ts.git"
   },
   "keywords": [
     "reactive-streams",
     "reactor-core",
     "reactive",
+    "rxjs",
+    "rsocket",
+    "spring",
+    "java",
     "typescript",
     "backpressure"
   ],
