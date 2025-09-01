@@ -1,6 +1,6 @@
 {
   "name": "reactor-core-ts",
-  "version": "1.0.8-beta",
+  "version": "1.0.9-beta",
   "description": "The Reactive-Streams based implementation of Reactor-Core",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
