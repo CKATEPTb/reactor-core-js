@@ -1,4 +1,4 @@
-import {Flux, Mono, Subscriber, Subscription} from '@/.';
+import {Flux, Mono, Sinks, Subscriber, Subscription} from '@/.';
 
 // ─────────────────────────── Test helpers ────────────────────────────────────
 
@@ -1028,6 +1028,75 @@ describe('Flux aggregation operators', () => {
             expect(ts.error).toBe(err);
         });
     });
+
+    describe('thenEmpty', () => {
+        it('completes with void after source and other both complete', () => {
+            const ts = new TestSubscriber<void>();
+            Flux.just(1, 2, 3).thenEmpty(Flux.empty()).subscribe(ts);
+            ts.requestUnbounded();
+            expect(ts.items).toHaveLength(1);    // single void value
+            expect(ts.completed).toBe(true);
+            expect(ts.error).toBeNull();
+        });
+
+        it('items from source are consumed and not forwarded', () => {
+            const ts = new TestSubscriber<void>();
+            Flux.just(100, 200, 300).thenEmpty(Flux.empty()).subscribe(ts);
+            ts.requestUnbounded();
+            // No number items leaked — only one void item from thenEmpty
+            expect(ts.items).toHaveLength(1);
+        });
+
+        it('items emitted by other are ignored — only completion matters', () => {
+            // thenEmpty uses Mono.from({subscribe}) which only reacts to onComplete of other
+            const ts = new TestSubscriber<void>();
+            Flux.just(1).thenEmpty(Flux.just(99, 98, 97)).subscribe(ts);
+            ts.requestUnbounded();
+            expect(ts.items).toHaveLength(1); // void, not 99/98/97
+            expect(ts.completed).toBe(true);
+        });
+
+        it('source error propagates — other is never subscribed', () => {
+            const err = new Error('src-err');
+            let otherSubscribed = false;
+            const other = { subscribe: (s: any) => { otherSubscribed = true; return s; } };
+            const ts = new TestSubscriber<void>();
+            Flux.error<number>(err).thenEmpty(other).subscribe(ts);
+            ts.requestUnbounded();
+            expect(ts.error).toBe(err);
+            expect(otherSubscribed).toBe(false);
+        });
+
+        it('error from other propagates to subscriber', () => {
+            const err = new Error('other-err');
+            const ts = new TestSubscriber<void>();
+            Flux.just(1, 2).thenEmpty(Flux.error(err)).subscribe(ts);
+            ts.requestUnbounded();
+            expect(ts.error).toBe(err);
+            expect(ts.completed).toBe(false);
+        });
+
+        it('works with async other via publishOn', async () => {
+            const asyncScheduler = { schedule: (fn: () => void) => setTimeout(fn, 0) };
+            const result = await new Promise<boolean>(resolve => {
+                Flux.just(1, 2, 3)
+                    .thenEmpty(Flux.empty().publishOn(asyncScheduler))
+                    .subscribe(
+                        _v => {},
+                        _e => {},
+                        () => resolve(true),
+                    );
+            });
+            expect(result).toBe(true);
+        });
+
+        it('empty source — other still runs', () => {
+            const ts = new TestSubscriber<void>();
+            Flux.empty<number>().thenEmpty(Flux.empty()).subscribe(ts);
+            ts.requestUnbounded();
+            expect(ts.completed).toBe(true);
+        });
+    });
 });
 
 // ─────────────────────────── Error handling ──────────────────────────────────
@@ -1282,6 +1351,69 @@ describe('Flux scheduling operators', () => {
                 });
             });
             expect(order).toEqual(['next:1', 'next:2', 'complete']);
+        });
+    });
+
+    describe('delayElements', () => {
+        beforeEach(() => jest.useFakeTimers());
+        afterEach(() => jest.useRealTimers());
+
+        it('items are delivered after the specified delay', () => {
+            const received: number[] = [];
+            Flux.just(1, 2, 3).delayElements(100).subscribe(v => received.push(v));
+
+            expect(received).toHaveLength(0); // nothing before the delay
+            jest.advanceTimersByTime(100);
+            expect(received).toEqual([1, 2, 3]); // all arrive at once after 100 ms
+        });
+
+        it('items with a longer delay are not delivered before it elapses', () => {
+            const received: number[] = [];
+            Flux.just(42).delayElements(200).subscribe(v => received.push(v));
+
+            jest.advanceTimersByTime(199);
+            expect(received).toHaveLength(0);
+
+            jest.advanceTimersByTime(1);
+            expect(received).toEqual([42]);
+        });
+
+        it('onError is not delayed — fires synchronously', () => {
+            const errors: Error[] = [];
+            const err = new Error('now');
+            Flux.error<number>(err).delayElements(500).subscribe(
+                () => {},
+                e => errors.push(e),
+            );
+            // Error arrives before any timer fires
+            expect(errors).toHaveLength(1);
+            expect(errors[0]).toBe(err);
+        });
+
+        it('onComplete fires before delayed items with synchronous source (current behavior)', () => {
+            // NOTE: This documents the known limitation of delayElements:
+            // onComplete is forwarded immediately when the source completes, before
+            // any setTimeout callbacks have fired. This means delayed items arrive
+            // AFTER onComplete when the source is synchronous.
+            const events: string[] = [];
+            Flux.just(1).delayElements(100).subscribe(
+                v => events.push(`next:${v}`),
+                _e => {},
+                () => events.push('complete'),
+            );
+
+            expect(events).toEqual(['complete']); // complete fires immediately
+            jest.advanceTimersByTime(100);
+            expect(events).toEqual(['complete', 'next:1']); // next arrives late
+        });
+
+        it('zero delay still defers delivery to the next event-loop tick', () => {
+            const received: number[] = [];
+            Flux.just(5, 6).delayElements(0).subscribe(v => received.push(v));
+
+            expect(received).toHaveLength(0); // not yet — setTimeout(fn, 0) is async
+            jest.runAllTimers();
+            expect(received).toEqual([5, 6]);
         });
     });
 });
