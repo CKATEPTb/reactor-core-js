@@ -4,7 +4,7 @@ import {Flux} from "@/publishers/Flux";
 import {PipePublisher} from "@/publishers/PipePublisher";
 import {Subscriber} from "@/subscriptions/Subscriber";
 import {Subscription} from "@/subscriptions/Subscription";
-import {AbstractPipePublisher} from "@/publishers/AbstractPipePublisher";
+import {AbstractPipePublisher} from "@/publishers/internal/AbstractPipePublisher";
 
 export class Mono<T> extends AbstractPipePublisher<T> implements PipePublisher<T> {
 

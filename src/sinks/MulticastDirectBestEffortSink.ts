@@ -1,13 +1,13 @@
-import {Sink} from "@/sinks/Sink";
-import {Publisher} from "@/publishers";
-import {Subscriber, Subscription} from "@/subscriptions";
+import {AbstractMulticastSink} from "@/sinks/internal/AbstractMulticastSink";
+import {Subscriber} from "@/subscriptions";
 
 type Entry = { demand: number; cancelled: boolean };
 
-export default class MulticastDirectBestEffortSink<T> implements Sink<T>, Publisher<T> {
-    private readonly entries = new Map<Subscriber<T>, Entry>();
-    private terminated: boolean = false;
-    private terminalError: Error | null = null;
+export default class MulticastDirectBestEffortSink<T> extends AbstractMulticastSink<T, Entry> {
+
+    protected createEntry(): Entry {
+        return { demand: 0, cancelled: false };
+    }
 
     next(value: T): void {
         if (this.terminated) return;
@@ -17,56 +17,5 @@ export default class MulticastDirectBestEffortSink<T> implements Sink<T>, Publis
                 sub.onNext(value);
             }
         }
-    }
-
-    error(error: Error): void {
-        if (this.terminated) return;
-        this.terminated = true;
-        this.terminalError = error;
-        for (const [sub, entry] of this.entries) {
-            if (!entry.cancelled) sub.onError(error);
-        }
-        this.entries.clear();
-    }
-
-    complete(): void {
-        if (this.terminated) return;
-        this.terminated = true;
-        for (const [sub, entry] of this.entries) {
-            if (!entry.cancelled) sub.onComplete();
-        }
-        this.entries.clear();
-    }
-
-    subscribe(subscriber: Subscriber<T>): Subscription {
-        if (this.terminated) {
-            const sub = { request() {}, unsubscribe() {} };
-            subscriber.onSubscribe(sub);
-            this.terminalError
-                ? subscriber.onError(this.terminalError)
-                : subscriber.onComplete();
-            return sub;
-        }
-        const entry: Entry = { demand: 0, cancelled: false };
-        this.entries.set(subscriber, entry);
-        const sub = {
-            request: (n: number) => {
-                if (entry.cancelled) return;
-                // Rule 3.9: request(n ≤ 0) MUST signal onError
-                if (n <= 0) {
-                    entry.cancelled = true;
-                    this.entries.delete(subscriber);
-                    subscriber.onError(new Error(`request must be > 0, but was ${n}`));
-                    return;
-                }
-                entry.demand = Math.min(entry.demand + n, Number.MAX_SAFE_INTEGER);
-            },
-            unsubscribe: () => {
-                entry.cancelled = true;
-                this.entries.delete(subscriber);
-            }
-        };
-        subscriber.onSubscribe(sub);
-        return sub;
     }
 }

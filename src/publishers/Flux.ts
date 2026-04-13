@@ -5,7 +5,7 @@ import {Mono} from "@/publishers/Mono";
 import {Subscriber} from "@/subscriptions/Subscriber";
 import {Subscription} from "@/subscriptions/Subscription";
 import ReplayAllSink from "@/sinks/ReplayAllSink";
-import {AbstractPipePublisher} from "@/publishers/AbstractPipePublisher";
+import {AbstractPipePublisher} from "@/publishers/internal/AbstractPipePublisher";
 
 export class Flux<T> extends AbstractPipePublisher<T> implements PipePublisher<T> {
 

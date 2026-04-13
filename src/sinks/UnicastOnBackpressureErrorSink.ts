@@ -1,13 +1,6 @@
-import {Sink} from "@/sinks/Sink";
-import {Publisher} from "@/publishers";
-import {Subscriber, Subscription} from "@/subscriptions";
+import {AbstractUnicastSink} from "@/sinks/internal/AbstractUnicastSink";
 
-export default class UnicastOnBackpressureErrorSink<T> implements Sink<T>, Publisher<T> {
-    private demand: number = 0;
-    private subscriber: Subscriber<T> | null = null;
-    private cancelled: boolean = false;
-    private terminated: boolean = false;
-    private terminalError: Error | null = null;
+export default class UnicastOnBackpressureErrorSink<T> extends AbstractUnicastSink<T> {
 
     next(value: T): void {
         if (this.terminated || this.cancelled || !this.subscriber) return;
@@ -17,60 +10,5 @@ export default class UnicastOnBackpressureErrorSink<T> implements Sink<T>, Publi
         }
         this.demand--;
         this.subscriber.onNext(value);
-    }
-
-    error(error: Error): void {
-        if (this.terminated) return;
-        this.terminated = true;
-        this.terminalError = error;
-        if (this.subscriber && !this.cancelled) {
-            this.subscriber.onError(error);
-        }
-    }
-
-    complete(): void {
-        if (this.terminated) return;
-        this.terminated = true;
-        if (this.subscriber && !this.cancelled) {
-            this.subscriber.onComplete();
-        }
-    }
-
-    subscribe(subscriber: Subscriber<T>): Subscription {
-        if (this.subscriber !== null) {
-            const noop = { request() {}, unsubscribe() {} };
-            subscriber.onSubscribe(noop);
-            subscriber.onError(new Error('UnicastOnBackpressureErrorSink allows only one subscriber'));
-            return noop;
-        }
-        if (this.terminated) {
-            const sub = { request() {}, unsubscribe() {} };
-            subscriber.onSubscribe(sub);
-            this.terminalError
-                ? subscriber.onError(this.terminalError)
-                : subscriber.onComplete();
-            return sub;
-        }
-        this.subscriber = subscriber;
-        const sub = {
-            request: (n: number) => {
-                if (this.cancelled) return;
-                // Rule 3.9: request(n ≤ 0) MUST signal onError
-                if (n <= 0) {
-                    this.cancelled = true;
-                    const s = this.subscriber;
-                    this.subscriber = null;
-                    s?.onError(new Error(`request must be > 0, but was ${n}`));
-                    return;
-                }
-                this.demand = Math.min(this.demand + n, Number.MAX_SAFE_INTEGER);
-            },
-            unsubscribe: () => {
-                this.cancelled = true;
-                this.subscriber = null;
-            }
-        };
-        subscriber.onSubscribe(sub);
-        return sub;
     }
 }

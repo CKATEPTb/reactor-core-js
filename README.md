@@ -43,7 +43,7 @@ yarn install reactor-core-ts
 ### Basic Example: Using Mono and Flux
 
 ```typescript
-import {Mono, Flux, Sinks, Schedulers} from "@ckateptb/reactor-core-js";
+import {Mono, Flux, Sinks, Schedulers} from "reactor-core-ts";
 
 // Creating a Mono
 const mono = Mono.just(42);

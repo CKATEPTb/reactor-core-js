@@ -1,21 +1,46 @@
-import {Sink} from "@/sinks/Sink";
-import {Publisher} from "@/publishers";
-import {Subscriber, Subscription} from "@/subscriptions";
+import {AbstractMulticastSink} from "@/sinks/internal/AbstractMulticastSink";
+import {Subscriber} from "@/subscriptions";
 
 // Rule 3.16: draining flag per subscriber prevents re-entrant drain (onNext → request → drain)
 type Entry<T> = { buffer: T[]; demand: number; cancelled: boolean; draining: boolean };
 
-export default class MulticastOnBackpressureBufferSink<T> implements Sink<T>, Publisher<T> {
-    private readonly entries = new Map<Subscriber<T>, Entry<T>>();
+export default class MulticastOnBackpressureBufferSink<T>
+    extends AbstractMulticastSink<T, Entry<T>> {
+
     private readonly bufferSize: number;
     private readonly autoCancel: boolean;
-    private terminated: boolean = false;
-    private terminalError: Error | null = null;
 
     constructor(bufferSize: number = 256, autoCancel: boolean = true) {
+        super();
         this.bufferSize = bufferSize;
         this.autoCancel = autoCancel;
     }
+
+    // ──── AbstractMulticastSink hooks ─────────────────────────────────────────
+
+    protected createEntry(): Entry<T> {
+        return { buffer: [], demand: 0, cancelled: false, draining: false };
+    }
+
+    /** Drain buffered items for each subscriber instead of completing immediately. */
+    protected deliverComplete(sub: Subscriber<T>, entry: Entry<T>): void {
+        this.drainEntry(sub, entry);
+    }
+
+    /** drainEntry handles its own cleanup — don't clear the map eagerly. */
+    protected clearEntriesAfterComplete(): boolean {
+        return false;
+    }
+
+    protected onDemandGranted(sub: Subscriber<T>, entry: Entry<T>): void {
+        this.drainEntry(sub, entry);
+    }
+
+    protected onUnsubscribed(_sub: Subscriber<T>, _entry: Entry<T>): void {
+        if (this.autoCancel && this.entries.size === 0) this.terminated = true;
+    }
+
+    // ──── Sink.next ───────────────────────────────────────────────────────────
 
     next(value: T): void {
         if (this.terminated) return;
@@ -35,23 +60,7 @@ export default class MulticastOnBackpressureBufferSink<T> implements Sink<T>, Pu
         }
     }
 
-    error(error: Error): void {
-        if (this.terminated) return;
-        this.terminated = true;
-        this.terminalError = error;
-        for (const [sub, entry] of this.entries) {
-            if (!entry.cancelled) sub.onError(error);
-        }
-        this.entries.clear();
-    }
-
-    complete(): void {
-        if (this.terminated) return;
-        this.terminated = true;
-        for (const [sub, entry] of this.entries) {
-            if (!entry.cancelled) this.drainEntry(sub, entry);
-        }
-    }
+    // ──── Internal drain ──────────────────────────────────────────────────────
 
     private drainEntry(sub: Subscriber<T>, entry: Entry<T>): void {
         if (entry.cancelled || entry.draining) return;
@@ -69,39 +78,5 @@ export default class MulticastOnBackpressureBufferSink<T> implements Sink<T>, Pu
         } finally {
             entry.draining = false;
         }
-    }
-
-    subscribe(subscriber: Subscriber<T>): Subscription {
-        if (this.terminated) {
-            const sub = { request() {}, unsubscribe() {} };
-            subscriber.onSubscribe(sub);
-            this.terminalError
-                ? subscriber.onError(this.terminalError)
-                : subscriber.onComplete();
-            return sub;
-        }
-        const entry: Entry<T> = { buffer: [], demand: 0, cancelled: false, draining: false };
-        this.entries.set(subscriber, entry);
-        const sub = {
-            request: (n: number) => {
-                if (entry.cancelled) return;
-                // Rule 3.9: request(n ≤ 0) MUST signal onError
-                if (n <= 0) {
-                    entry.cancelled = true;
-                    this.entries.delete(subscriber);
-                    subscriber.onError(new Error(`request must be > 0, but was ${n}`));
-                    return;
-                }
-                entry.demand = Math.min(entry.demand + n, Number.MAX_SAFE_INTEGER);
-                this.drainEntry(subscriber, entry);
-            },
-            unsubscribe: () => {
-                entry.cancelled = true;
-                this.entries.delete(subscriber);
-                if (this.autoCancel && this.entries.size === 0) this.terminated = true;
-            }
-        };
-        subscriber.onSubscribe(sub);
-        return sub;
     }
 }

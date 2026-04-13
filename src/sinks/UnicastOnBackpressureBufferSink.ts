@@ -1,16 +1,36 @@
-import {Sink} from "@/sinks/Sink";
-import {Publisher} from "@/publishers";
-import {Subscriber, Subscription} from "@/subscriptions";
+import {AbstractUnicastSink} from "@/sinks/internal/AbstractUnicastSink";
 
-export default class UnicastOnBackpressureBufferSink<T> implements Sink<T>, Publisher<T> {
+export default class UnicastOnBackpressureBufferSink<T> extends AbstractUnicastSink<T> {
+
     private readonly buffer: T[] = [];
-    private demand: number = 0;
-    private subscriber: Subscriber<T> | null = null;
-    private cancelled: boolean = false;
-    private terminated: boolean = false;
-    private terminalError: Error | null = null;
     // Rule 3.16: guard against re-entrant drain (onNext → request → drain)
-    private draining: boolean = false;
+    private draining = false;
+
+    // ──── AbstractUnicastSink hooks ───────────────────────────────────────────
+
+    /** Allow late subscribers — they receive buffered items then the terminal signal. */
+    protected shouldReplayTerminalOnSubscribe(): boolean {
+        return false;
+    }
+
+    /** Use drain() for both error and complete so buffered items are delivered first. */
+    protected onTerminal(): void {
+        this.drain();
+    }
+
+    protected onDemandGranted(): void {
+        this.drain();
+    }
+
+    protected onUnsubscribed(): void {
+        this.buffer.length = 0;
+    }
+
+    protected afterSubscribed(): void {
+        this.drain();
+    }
+
+    // ──── Sink.next ───────────────────────────────────────────────────────────
 
     next(value: T): void {
         if (this.terminated || this.cancelled) return;
@@ -18,18 +38,7 @@ export default class UnicastOnBackpressureBufferSink<T> implements Sink<T>, Publ
         this.drain();
     }
 
-    error(error: Error): void {
-        if (this.terminated) return;
-        this.terminated = true;
-        this.terminalError = error;
-        this.drain();
-    }
-
-    complete(): void {
-        if (this.terminated) return;
-        this.terminated = true;
-        this.drain();
-    }
+    // ──── Internal drain ──────────────────────────────────────────────────────
 
     private drain(): void {
         if (!this.subscriber || this.cancelled || this.draining) return;
@@ -48,39 +57,5 @@ export default class UnicastOnBackpressureBufferSink<T> implements Sink<T>, Publ
         } finally {
             this.draining = false;
         }
-    }
-
-    subscribe(subscriber: Subscriber<T>): Subscription {
-        if (this.subscriber !== null) {
-            const noop = { request() {}, unsubscribe() {} };
-            subscriber.onSubscribe(noop);
-            subscriber.onError(new Error('UnicastOnBackpressureBufferSink allows only one subscriber'));
-            return noop;
-        }
-        this.subscriber = subscriber;
-        const sub = {
-            request: (n: number) => {
-                if (this.cancelled) return;
-                // Rule 3.9: request(n ≤ 0) MUST signal onError
-                if (n <= 0) {
-                    this.cancelled = true;
-                    this.buffer.length = 0;
-                    const s = this.subscriber;
-                    this.subscriber = null;
-                    s?.onError(new Error(`request must be > 0, but was ${n}`));
-                    return;
-                }
-                this.demand = Math.min(this.demand + n, Number.MAX_SAFE_INTEGER);
-                this.drain();
-            },
-            unsubscribe: () => {
-                this.cancelled = true;
-                this.subscriber = null;
-                this.buffer.length = 0;
-            }
-        };
-        subscriber.onSubscribe(sub);
-        this.drain();
-        return sub;
     }
 }

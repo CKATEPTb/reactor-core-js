@@ -1,6 +1,5 @@
-import {Sink} from "@/sinks/Sink";
-import {Publisher} from "@/publishers";
-import {Subscriber, Subscription} from "@/subscriptions";
+import {AbstractMulticastSink} from "@/sinks/internal/AbstractMulticastSink";
+import {Subscriber} from "@/subscriptions";
 
 // Rule 3.16: draining flag prevents re-entrant drain (onNext → request → drain)
 type Entry<T> = { replay: T[]; demand: number; cancelled: boolean; draining: boolean };
@@ -9,16 +8,46 @@ type Entry<T> = { replay: T[]; demand: number; cancelled: boolean; draining: boo
  * Replays the latest `limit` emitted items to each new subscriber.
  * Used for both `Sinks.many().replay().latest(limit)` and `Sinks.many().replay().limit(limit)`.
  */
-export default class ReplayLatestSink<T> implements Sink<T>, Publisher<T> {
+export default class ReplayLatestSink<T> extends AbstractMulticastSink<T, Entry<T>> {
+
     private readonly limit: number;
     private readonly history: T[] = [];
-    private readonly entries = new Map<Subscriber<T>, Entry<T>>();
-    private terminated: boolean = false;
-    private terminalError: Error | null = null;
 
     constructor(limit: number) {
+        super();
         this.limit = limit;
     }
+
+    // ──── AbstractMulticastSink hooks ─────────────────────────────────────────
+
+    protected createEntry(): Entry<T> {
+        return { replay: [...this.history], demand: 0, cancelled: false, draining: false };
+    }
+
+    protected shouldReplayTerminalOnSubscribe(): boolean {
+        return this.terminated && this.history.length === 0;
+    }
+
+    /** Drain buffered replay queue first, then signal error. */
+    protected deliverError(sub: Subscriber<T>, entry: Entry<T>): void {
+        this.drainEntry(sub, entry);
+        if (!entry.cancelled) sub.onError(this.terminalError!);
+    }
+
+    /** Drain buffered replay queue — drainEntry signals complete when done. */
+    protected deliverComplete(sub: Subscriber<T>, entry: Entry<T>): void {
+        if (!entry.cancelled) this.drainEntry(sub, entry);
+    }
+
+    protected clearEntriesAfterComplete(): boolean {
+        return false;
+    }
+
+    protected onDemandGranted(sub: Subscriber<T>, entry: Entry<T>): void {
+        this.drainEntry(sub, entry);
+    }
+
+    // ──── Sink.next ───────────────────────────────────────────────────────────
 
     next(value: T): void {
         if (this.terminated) return;
@@ -32,26 +61,7 @@ export default class ReplayLatestSink<T> implements Sink<T>, Publisher<T> {
         }
     }
 
-    error(error: Error): void {
-        if (this.terminated) return;
-        this.terminated = true;
-        this.terminalError = error;
-        for (const [sub, entry] of this.entries) {
-            if (!entry.cancelled) {
-                this.drainEntry(sub, entry);
-                if (!entry.cancelled) sub.onError(error);
-            }
-        }
-        this.entries.clear();
-    }
-
-    complete(): void {
-        if (this.terminated) return;
-        this.terminated = true;
-        for (const [sub, entry] of this.entries) {
-            if (!entry.cancelled) this.drainEntry(sub, entry);
-        }
-    }
+    // ──── Internal drain ──────────────────────────────────────────────────────
 
     private drainEntry(sub: Subscriber<T>, entry: Entry<T>): void {
         if (entry.cancelled || entry.draining) return;
@@ -69,38 +79,5 @@ export default class ReplayLatestSink<T> implements Sink<T>, Publisher<T> {
         } finally {
             entry.draining = false;
         }
-    }
-
-    subscribe(subscriber: Subscriber<T>): Subscription {
-        if (this.terminated && this.history.length === 0) {
-            const sub = { request() {}, unsubscribe() {} };
-            subscriber.onSubscribe(sub);
-            this.terminalError
-                ? subscriber.onError(this.terminalError)
-                : subscriber.onComplete();
-            return sub;
-        }
-        const entry: Entry<T> = { replay: [...this.history], demand: 0, cancelled: false, draining: false };
-        this.entries.set(subscriber, entry);
-        const sub = {
-            request: (n: number) => {
-                if (entry.cancelled) return;
-                // Rule 3.9: request(n ≤ 0) MUST signal onError
-                if (n <= 0) {
-                    entry.cancelled = true;
-                    this.entries.delete(subscriber);
-                    subscriber.onError(new Error(`request must be > 0, but was ${n}`));
-                    return;
-                }
-                entry.demand = Math.min(entry.demand + n, Number.MAX_SAFE_INTEGER);
-                this.drainEntry(subscriber, entry);
-            },
-            unsubscribe: () => {
-                entry.cancelled = true;
-                this.entries.delete(subscriber);
-            }
-        };
-        subscriber.onSubscribe(sub);
-        return sub;
     }
 }
