@@ -1358,13 +1358,17 @@ describe('Flux scheduling operators', () => {
         beforeEach(() => jest.useFakeTimers());
         afterEach(() => jest.useRealTimers());
 
-        it('items are delivered after the specified delay', () => {
+        it('items are spaced ms apart (one at a time, not all at once)', () => {
             const received: number[] = [];
             Flux.just(1, 2, 3).delayElements(100).subscribe(v => received.push(v));
 
-            expect(received).toHaveLength(0); // nothing before the delay
+            expect(received).toHaveLength(0);
             jest.advanceTimersByTime(100);
-            expect(received).toEqual([1, 2, 3]); // all arrive at once after 100 ms
+            expect(received).toEqual([1]); // first item after 100 ms
+            jest.advanceTimersByTime(100);
+            expect(received).toEqual([1, 2]); // second after another 100 ms
+            jest.advanceTimersByTime(100);
+            expect(received).toEqual([1, 2, 3]); // third after another 100 ms
         });
 
         it('items with a longer delay are not delivered before it elapses', () => {
@@ -1378,23 +1382,19 @@ describe('Flux scheduling operators', () => {
             expect(received).toEqual([42]);
         });
 
-        it('onError is not delayed — fires synchronously', () => {
-            const errors: Error[] = [];
+        it('onError is not delayed — fires immediately, cancels pending timer', () => {
+            const events: string[] = [];
             const err = new Error('now');
             Flux.error<number>(err).delayElements(500).subscribe(
-                () => {},
-                e => errors.push(e),
+                v => events.push(`next:${v}`),
+                e => events.push(`error:${e.message}`),
             );
-            // Error arrives before any timer fires
-            expect(errors).toHaveLength(1);
-            expect(errors[0]).toBe(err);
+            expect(events).toEqual(['error:now']);
+            jest.runAllTimers(); // no extra signals after error
+            expect(events).toEqual(['error:now']);
         });
 
-        it('onComplete fires before delayed items with synchronous source (current behavior)', () => {
-            // NOTE: This documents the known limitation of delayElements:
-            // onComplete is forwarded immediately when the source completes, before
-            // any setTimeout callbacks have fired. This means delayed items arrive
-            // AFTER onComplete when the source is synchronous.
+        it('onComplete fires after the last delayed item', () => {
             const events: string[] = [];
             Flux.just(1).delayElements(100).subscribe(
                 v => events.push(`next:${v}`),
@@ -1402,9 +1402,9 @@ describe('Flux scheduling operators', () => {
                 () => events.push('complete'),
             );
 
-            expect(events).toEqual(['complete']); // complete fires immediately
+            expect(events).toEqual([]); // nothing yet
             jest.advanceTimersByTime(100);
-            expect(events).toEqual(['complete', 'next:1']); // next arrives late
+            expect(events).toEqual(['next:1', 'complete']); // item then complete together
         });
 
         it('zero delay still defers delivery to the next event-loop tick', () => {
@@ -1414,6 +1414,22 @@ describe('Flux scheduling operators', () => {
             expect(received).toHaveLength(0); // not yet — setTimeout(fn, 0) is async
             jest.runAllTimers();
             expect(received).toEqual([5, 6]);
+        });
+
+        it('cancellation stops delivery and clears pending timer', () => {
+            const events: string[] = [];
+            let sub!: { unsubscribe(): void };
+            Flux.just(1, 2, 3).delayElements(100).subscribe({
+                onSubscribe(s) { sub = s; s.request(10); },
+                onNext(v) { events.push(`next:${v}`); },
+                onError() {},
+                onComplete() { events.push('complete'); }
+            });
+            jest.advanceTimersByTime(100); // first item delivered
+            expect(events).toEqual(['next:1']);
+            sub.unsubscribe();            // cancel while second timer is pending
+            jest.runAllTimers();          // no more signals after cancel
+            expect(events).toEqual(['next:1']);
         });
     });
 });

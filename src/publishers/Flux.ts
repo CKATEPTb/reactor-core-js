@@ -2308,25 +2308,77 @@ export class Flux<T> extends AbstractPipePublisher<T, Flux<T>> implements PipePu
     }
 
     /**
-     * Delays the delivery of each item by `ms` milliseconds using the delay scheduler.
+     * Delays the delivery of each item by `ms` milliseconds.
      *
-     * The source is subscribed to at full speed; each emitted item is individually
-     * scheduled for delivery after the specified delay.
+     * Items are processed **one at a time**: the next item is requested from the source
+     * only after the previous delayed item has been delivered downstream.  This guarantees
+     * items are spaced at least `ms` apart and that `onComplete` fires only after the last
+     * delayed item has been delivered.
      *
-     * @param ms - Delay in milliseconds applied to each item.
-     * @returns A `Flux<T>` with delayed item delivery.
+     * Errors are forwarded immediately without delay, cancelling any pending timer.
+     *
+     * @param ms - Delay in milliseconds between consecutive item deliveries.
+     * @returns A `Flux<T>` where each item is delayed by `ms` before being forwarded.
      */
     public delayElements(ms: number): Flux<T> {
         return new Flux<T>({
             subscribe: (subscriber: Subscriber<T>): Subscription => {
-                const sub = this.source.subscribe({
-                    onSubscribe(_s) {},
-                    onNext(v) { Schedulers.delay(ms).schedule(() => subscriber.onNext(v)); },
-                    onError(e) { subscriber.onError(e); },
-                    onComplete() { subscriber.onComplete(); }
+                let sourceSub: Subscription = { request() {}, unsubscribe() {} };
+                let pending: { cancel(): void } | null = null;
+                let cancelled = false;
+                let demand = 0;
+                let sourceCompleted = false;
+
+                const operatorSub: Subscription = {
+                    request(n: number) {
+                        if (cancelled) return;
+                        if (n <= 0) { subscriber.onError(new Error(`request must be > 0, but was ${n}`)); return; }
+                        const wasZero = demand === 0;
+                        demand = Math.min(demand + n, Number.MAX_SAFE_INTEGER);
+                        // Only pull from source if no item is currently in-flight (timer pending).
+                        if (wasZero && pending === null) sourceSub.request(1);
+                    },
+                    unsubscribe() {
+                        cancelled = true;
+                        pending?.cancel();
+                        pending = null;
+                        sourceSub.unsubscribe();
+                    }
+                };
+
+                this.source.subscribe({
+                    onSubscribe(s: Subscription) {
+                        sourceSub = s;
+                        subscriber.onSubscribe(operatorSub);
+                    },
+                    onNext(v: T) {
+                        pending = Schedulers.delay(ms).schedule(() => {
+                            pending = null;
+                            if (cancelled) return;
+                            demand--;
+                            subscriber.onNext(v);
+                            if (cancelled) return;
+                            if (sourceCompleted) {
+                                subscriber.onComplete();
+                            } else if (demand > 0) {
+                                sourceSub.request(1);
+                            }
+                        });
+                    },
+                    onError(e: Error) {
+                        pending?.cancel();
+                        pending = null;
+                        subscriber.onError(e);
+                    },
+                    onComplete() {
+                        sourceCompleted = true;
+                        // If no item is in-flight, complete immediately.
+                        // Otherwise the pending timer will deliver the last item and then complete.
+                        if (pending === null && !cancelled) subscriber.onComplete();
+                    }
                 });
-                subscriber.onSubscribe(sub);
-                return sub;
+
+                return operatorSub;
             }
         });
     }
