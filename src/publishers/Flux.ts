@@ -243,16 +243,25 @@ export class Flux<T> implements PipePublisher<T> {
                 let outerSub: Subscription = { request() {}, unsubscribe() {} };
                 const innerSubs = new Set<Subscription>();
                 let cancelled = false;
+                let terminated = false;
                 let outerDone = false;
                 let demand = 0;
 
+                // Cancel all upstream sources and signal terminal to downstream exactly once.
+                const terminate = (err?: Error) => {
+                    if (terminated) return;
+                    terminated = true;
+                    outerSub.unsubscribe();
+                    for (const s of innerSubs) s.unsubscribe();
+                    innerSubs.clear();
+                    if (err) subscriber.onError(err);
+                    else subscriber.onComplete();
+                };
+
                 const operatorSub: Subscription = {
                     request(n: number) {
-                        if (cancelled) return;
-                        if (n <= 0) {
-                            subscriber.onError(new Error(`request must be > 0, but was ${n}`));
-                            return;
-                        }
+                        if (cancelled || terminated) return;
+                        if (n <= 0) { terminate(new Error(`request must be > 0, but was ${n}`)); return; }
                         demand = Math.min(demand + n, Number.MAX_SAFE_INTEGER);
                         for (const s of innerSubs) s.request(n);
                     },
@@ -270,26 +279,26 @@ export class Flux<T> implements PipePublisher<T> {
                         subscriber.onSubscribe(operatorSub);
                     },
                     onNext(v: T) {
-                        if (cancelled) return;
+                        if (cancelled || terminated) return;
                         let inner: Publisher<R>;
                         try { inner = fn(v); }
-                        catch (e) { subscriber.onError(e instanceof Error ? e : new Error(String(e))); return; }
+                        catch (e) { terminate(e instanceof Error ? e : new Error(String(e))); return; }
                         const innerSub = inner.subscribe({
                             onSubscribe(_s) {},
-                            onNext(r) { subscriber.onNext(r); },
-                            onError(e) { subscriber.onError(e); },
+                            onNext(r) { if (!cancelled && !terminated) subscriber.onNext(r); },
+                            onError(e) { terminate(e); },
                             onComplete() {
                                 innerSubs.delete(innerSub);
-                                if (outerDone && innerSubs.size === 0) subscriber.onComplete();
+                                if (!terminated && outerDone && innerSubs.size === 0) terminate();
                             }
                         });
                         innerSubs.add(innerSub);
                         if (demand > 0) innerSub.request(demand);
                     },
-                    onError(e) { subscriber.onError(e); },
+                    onError(e) { terminate(e); },
                     onComplete() {
                         outerDone = true;
-                        if (innerSubs.size === 0) subscriber.onComplete();
+                        if (!terminated && innerSubs.size === 0) terminate();
                     }
                 });
                 outerSub.request(Number.MAX_SAFE_INTEGER);
@@ -306,12 +315,23 @@ export class Flux<T> implements PipePublisher<T> {
                 let outerSub!: Subscription;
                 let innerSub: Subscription | null = null;
                 let cancelled = false;
+                let terminated = false;
                 let outerDone = false;
+
+                const terminate = (err?: Error) => {
+                    if (terminated) return;
+                    terminated = true;
+                    outerSub?.unsubscribe();
+                    innerSub?.unsubscribe();
+                    innerSub = null;
+                    if (err) subscriber.onError(err);
+                    else subscriber.onComplete();
+                };
 
                 const operatorSub: Subscription = {
                     request(n: number) {
-                        if (cancelled) return;
-                        if (n <= 0) { subscriber.onError(new Error(`request must be > 0, but was ${n}`)); return; }
+                        if (cancelled || terminated) return;
+                        if (n <= 0) { terminate(new Error(`request must be > 0, but was ${n}`)); return; }
                         if (innerSub) innerSub.request(n);
                         else outerSub.request(1);
                     },
@@ -324,26 +344,26 @@ export class Flux<T> implements PipePublisher<T> {
                         subscriber.onSubscribe(operatorSub);
                     },
                     onNext(v: T) {
-                        if (cancelled) return;
+                        if (cancelled || terminated) return;
                         let inner: Publisher<R>;
                         try { inner = fn(v); }
-                        catch (e) { subscriber.onError(e instanceof Error ? e : new Error(String(e))); return; }
+                        catch (e) { terminate(e instanceof Error ? e : new Error(String(e))); return; }
                         inner.subscribe({
                             onSubscribe(s) { innerSub = s; s.request(Number.MAX_SAFE_INTEGER); },
-                            onNext(r) { if (!cancelled) subscriber.onNext(r); },
-                            onError(e) { if (!cancelled) subscriber.onError(e); },
+                            onNext(r) { if (!cancelled && !terminated) subscriber.onNext(r); },
+                            onError(e) { terminate(e); },
                             onComplete() {
-                                if (cancelled) return;
+                                if (cancelled || terminated) return;
                                 innerSub = null;
-                                if (outerDone) subscriber.onComplete();
+                                if (outerDone) terminate();
                                 else outerSub.request(1);
                             }
                         });
                     },
-                    onError(e) { if (!cancelled) subscriber.onError(e); },
+                    onError(e) { terminate(e); },
                     onComplete() {
                         outerDone = true;
-                        if (innerSub === null && !cancelled) subscriber.onComplete();
+                        if (innerSub === null) terminate();
                     }
                 });
 
@@ -359,14 +379,25 @@ export class Flux<T> implements PipePublisher<T> {
                 let outerSub!: Subscription;
                 let innerSub: Subscription | null = null;
                 let cancelled = false;
+                let terminated = false;
                 let outerDone = false;
                 let demand = 0;
                 let generation = 0;
 
+                const terminate = (err?: Error) => {
+                    if (terminated) return;
+                    terminated = true;
+                    outerSub?.unsubscribe();
+                    innerSub?.unsubscribe();
+                    innerSub = null;
+                    if (err) subscriber.onError(err);
+                    else subscriber.onComplete();
+                };
+
                 const operatorSub: Subscription = {
                     request(n: number) {
-                        if (cancelled) return;
-                        if (n <= 0) { subscriber.onError(new Error(`request must be > 0, but was ${n}`)); return; }
+                        if (cancelled || terminated) return;
+                        if (n <= 0) { terminate(new Error(`request must be > 0, but was ${n}`)); return; }
                         demand = Math.min(demand + n, Number.MAX_SAFE_INTEGER);
                         if (innerSub) innerSub.request(n);
                     },
@@ -379,32 +410,32 @@ export class Flux<T> implements PipePublisher<T> {
                         subscriber.onSubscribe(operatorSub);
                     },
                     onNext(v: T) {
-                        if (cancelled) return;
+                        if (cancelled || terminated) return;
                         innerSub?.unsubscribe();
                         innerSub = null;
                         const myGen = ++generation;
                         let inner: Publisher<R>;
                         try { inner = fn(v); }
-                        catch (e) { subscriber.onError(e instanceof Error ? e : new Error(String(e))); return; }
+                        catch (e) { terminate(e instanceof Error ? e : new Error(String(e))); return; }
                         inner.subscribe({
                             onSubscribe(s) {
-                                if (generation !== myGen || cancelled) { s.unsubscribe(); return; }
+                                if (generation !== myGen || cancelled || terminated) { s.unsubscribe(); return; }
                                 innerSub = s;
                                 if (demand > 0) s.request(demand);
                             },
-                            onNext(r) { if (generation === myGen && !cancelled) subscriber.onNext(r); },
-                            onError(e) { if (generation === myGen && !cancelled) subscriber.onError(e); },
+                            onNext(r) { if (generation === myGen && !cancelled && !terminated) subscriber.onNext(r); },
+                            onError(e) { if (generation === myGen) terminate(e); },
                             onComplete() {
-                                if (generation !== myGen || cancelled) return;
+                                if (generation !== myGen || cancelled || terminated) return;
                                 innerSub = null;
-                                if (outerDone) subscriber.onComplete();
+                                if (outerDone) terminate();
                             }
                         });
                     },
-                    onError(e) { if (!cancelled) subscriber.onError(e); },
+                    onError(e) { terminate(e); },
                     onComplete() {
                         outerDone = true;
-                        if (innerSub === null && !cancelled) subscriber.onComplete();
+                        if (innerSub === null) terminate();
                     }
                 });
                 outerSub.request(Number.MAX_SAFE_INTEGER);
@@ -784,14 +815,24 @@ export class Flux<T> implements PipePublisher<T> {
                 let leftDone = false;
                 let rightDone = false;
                 let cancelled = false;
+                let terminated = false;
 
                 let leftSub: Subscription = { request() {}, unsubscribe() {} };
                 let rightSub: Subscription = { request() {}, unsubscribe() {} };
 
+                const terminate = (err?: Error) => {
+                    if (terminated) return;
+                    terminated = true;
+                    leftSub.unsubscribe();
+                    rightSub.unsubscribe();
+                    if (err) subscriber.onError(err);
+                    else subscriber.onComplete();
+                };
+
                 const operatorSub: Subscription = {
                     request(n: number) {
-                        if (cancelled) return;
-                        if (n <= 0) { subscriber.onError(new Error(`request must be > 0, but was ${n}`)); return; }
+                        if (cancelled || terminated) return;
+                        if (n <= 0) { terminate(new Error(`request must be > 0, but was ${n}`)); return; }
                         leftSub.request(n);
                         rightSub.request(n);
                     },
@@ -800,16 +841,14 @@ export class Flux<T> implements PipePublisher<T> {
 
                 const tryEmit = () => {
                     while (leftQueue.length > 0 && rightQueue.length > 0) {
-                        if (cancelled) return;
+                        if (cancelled || terminated) return;
                         const l = leftQueue.shift()!;
                         const r = rightQueue.shift()!;
                         try { subscriber.onNext(combiner(l, r)); }
-                        catch (e) { subscriber.onError(e instanceof Error ? e : new Error(String(e))); return; }
+                        catch (e) { terminate(e instanceof Error ? e : new Error(String(e))); return; }
                     }
-                    if (!cancelled) {
-                        if ((leftDone && leftQueue.length === 0) || (rightDone && rightQueue.length === 0)) {
-                            subscriber.onComplete();
-                        }
+                    if ((leftDone && leftQueue.length === 0) || (rightDone && rightQueue.length === 0)) {
+                        terminate();
                     }
                 };
 
@@ -818,16 +857,16 @@ export class Flux<T> implements PipePublisher<T> {
                         leftSub = s;
                         subscriber.onSubscribe(operatorSub);
                     },
-                    onNext(v: T) { if (!cancelled) { leftQueue.push(v); tryEmit(); } },
-                    onError(e: Error) { if (!cancelled) subscriber.onError(e); },
-                    onComplete() { if (!cancelled) { leftDone = true; tryEmit(); } }
+                    onNext(v: T) { if (!cancelled && !terminated) { leftQueue.push(v); tryEmit(); } },
+                    onError(e: Error) { terminate(e); },
+                    onComplete() { if (!cancelled && !terminated) { leftDone = true; tryEmit(); } }
                 });
 
                 rightSub = other.subscribe({
                     onSubscribe(s: Subscription) { rightSub = s; },
-                    onNext(v: R) { if (!cancelled) { rightQueue.push(v); tryEmit(); } },
-                    onError(e: Error) { if (!cancelled) subscriber.onError(e); },
-                    onComplete() { if (!cancelled) { rightDone = true; tryEmit(); } }
+                    onNext(v: R) { if (!cancelled && !terminated) { rightQueue.push(v); tryEmit(); } },
+                    onError(e: Error) { terminate(e); },
+                    onComplete() { if (!cancelled && !terminated) { rightDone = true; tryEmit(); } }
                 });
 
                 return operatorSub;
@@ -1409,15 +1448,26 @@ export class Flux<T> implements PipePublisher<T> {
             subscribe: (subscriber: Subscriber<T>): Subscription => {
                 let doneCount = 0;
                 let cancelled = false;
-                const done = () => { if (++doneCount === 2) subscriber.onComplete(); };
+                let terminated = false;
 
                 let primarySub: Subscription = { request() {}, unsubscribe() {} };
                 let otherSubRef: Subscription = { request() {}, unsubscribe() {} };
 
+                const terminate = (err?: Error) => {
+                    if (terminated) return;
+                    terminated = true;
+                    primarySub.unsubscribe();
+                    otherSubRef.unsubscribe();
+                    if (err) subscriber.onError(err);
+                    else subscriber.onComplete();
+                };
+
+                const done = () => { if (!terminated && ++doneCount === 2) terminate(); };
+
                 const operatorSub: Subscription = {
                     request(n) {
-                        if (cancelled) return;
-                        if (n <= 0) { subscriber.onError(new Error(`request must be > 0, but was ${n}`)); return; }
+                        if (cancelled || terminated) return;
+                        if (n <= 0) { terminate(new Error(`request must be > 0, but was ${n}`)); return; }
                         primarySub.request(n);
                         otherSubRef.request(n);
                     },
@@ -1429,15 +1479,15 @@ export class Flux<T> implements PipePublisher<T> {
                         primarySub = sourceSub;
                         subscriber.onSubscribe(operatorSub);
                     },
-                    onNext(v) { subscriber.onNext(v); },
-                    onError(e) { subscriber.onError(e); },
+                    onNext(v) { if (!cancelled && !terminated) subscriber.onNext(v); },
+                    onError(e) { terminate(e); },
                     onComplete() { done(); }
                 });
 
                 otherSubRef = other.subscribe({
                     onSubscribe(_s) {},
-                    onNext(v) { subscriber.onNext(v); },
-                    onError(e) { subscriber.onError(e); },
+                    onNext(v) { if (!cancelled && !terminated) subscriber.onNext(v); },
+                    onError(e) { terminate(e); },
                     onComplete() { done(); }
                 });
 
