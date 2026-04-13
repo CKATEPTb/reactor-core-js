@@ -191,12 +191,14 @@ export class Flux<T> implements PipePublisher<T> {
     public mapNotNull<R>(fn: (value: T) => R | null | undefined): Flux<NonNullable<R>> {
         return new Flux<NonNullable<R>>({
             subscribe: (subscriber: Subscriber<NonNullable<R>>): Subscription => {
+                let sourceSub!: Subscription;
                 const sub = this.source.subscribe({
-                    onSubscribe(_s) {},
+                    onSubscribe(s) { sourceSub = s; },
                     onNext(v) {
                         try {
                             const r = fn(v);
                             if (r != null) subscriber.onNext(r as NonNullable<R>);
+                            else sourceSub.request(1); // replenish: null item skipped
                         } catch (e) {
                             subscriber.onError(e instanceof Error ? e : new Error(String(e)));
                         }
@@ -210,22 +212,33 @@ export class Flux<T> implements PipePublisher<T> {
         });
     }
 
-    /** Flexible per-element transformation: handler can emit 0 or more items, or signal error/complete. */
+    /**
+     * Flexible per-element transformation: handler may emit 0 or 1 item per input via sink.next(),
+     * or signal error/complete. Emitting more than once per input is ignored (0-or-1 semantics,
+     * matching reactor-core SynchronousSink). When 0 items are emitted, upstream is replenished
+     * with request(1) to compensate for the skipped demand.
+     */
     public handle<R>(handler: (value: T, sink: Sink<R>) => void): Flux<R> {
         return new Flux<R>({
             subscribe: (subscriber: Subscriber<R>): Subscription => {
+                let sourceSub!: Subscription;
                 let done = false;
                 const sub = this.source.subscribe({
-                    onSubscribe(_s) {},
+                    onSubscribe(s) { sourceSub = s; },
                     onNext(v) {
                         if (done) return;
+                        let emitted = false;
                         const sinkWrapper: Sink<R> = {
-                            next(r) { if (!done) subscriber.onNext(r); },
+                            next(r) {
+                                if (!emitted && !done) { emitted = true; subscriber.onNext(r); }
+                            },
                             error(e) { if (!done) { done = true; subscriber.onError(e); } },
                             complete() { if (!done) { done = true; subscriber.onComplete(); } }
                         };
                         try { handler(v, sinkWrapper); }
                         catch (e) { if (!done) { done = true; subscriber.onError(e instanceof Error ? e : new Error(String(e))); } }
+                        // Replenish: item was skipped (0 emissions) — request one more from upstream
+                        if (!done && !emitted) sourceSub.request(1);
                     },
                     onError(e) { if (!done) subscriber.onError(e); },
                     onComplete() { if (!done) subscriber.onComplete(); }
@@ -448,11 +461,14 @@ export class Flux<T> implements PipePublisher<T> {
     public filter(predicate: (value: T) => boolean): Flux<T> {
         return new Flux<T>({
             subscribe: (subscriber: Subscriber<T>): Subscription => {
+                let sourceSub!: Subscription;
                 const sub = this.source.subscribe({
-                    onSubscribe(_s) {},
+                    onSubscribe(s) { sourceSub = s; },
                     onNext(v) {
-                        try { if (predicate(v)) subscriber.onNext(v); }
-                        catch (e) { subscriber.onError(e instanceof Error ? e : new Error(String(e))); }
+                        try {
+                            if (predicate(v)) subscriber.onNext(v);
+                            else sourceSub.request(1); // replenish: item skipped
+                        } catch (e) { subscriber.onError(e instanceof Error ? e : new Error(String(e))); }
                     },
                     onError(e) { subscriber.onError(e); },
                     onComplete() { subscriber.onComplete(); }
@@ -1286,9 +1302,13 @@ export class Flux<T> implements PipePublisher<T> {
         return new Flux<T>({
             subscribe: (subscriber: Subscriber<T>): Subscription => {
                 let skipped = 0;
+                let sourceSub!: Subscription;
                 const sub = this.source.subscribe({
-                    onSubscribe(_s) {},
-                    onNext(v) { if (skipped++ < n) return; subscriber.onNext(v); },
+                    onSubscribe(s) { sourceSub = s; },
+                    onNext(v) {
+                        if (skipped++ < n) sourceSub.request(1); // replenish: item skipped
+                        else subscriber.onNext(v);
+                    },
                     onError(e) { subscriber.onError(e); },
                     onComplete() { subscriber.onComplete(); }
                 });
@@ -1302,10 +1322,11 @@ export class Flux<T> implements PipePublisher<T> {
         return new Flux<T>({
             subscribe: (subscriber: Subscriber<T>): Subscription => {
                 let skipping = true;
+                let sourceSub!: Subscription;
                 const sub = this.source.subscribe({
-                    onSubscribe(_s) {},
+                    onSubscribe(s) { sourceSub = s; },
                     onNext(v) {
-                        if (skipping && predicate(v)) return;
+                        if (skipping && predicate(v)) { sourceSub.request(1); return; }
                         skipping = false;
                         subscriber.onNext(v);
                     },
@@ -1332,7 +1353,7 @@ export class Flux<T> implements PipePublisher<T> {
                 triggerSub.request(1);
                 primarySub = this.source.subscribe({
                     onSubscribe(_s) {},
-                    onNext(v) { if (!gating) subscriber.onNext(v); },
+                    onNext(v) { if (!gating) subscriber.onNext(v); else primarySub.request(1); },
                     onError(e) { subscriber.onError(e); },
                     onComplete() { subscriber.onComplete(); }
                 });
@@ -1349,9 +1370,10 @@ export class Flux<T> implements PipePublisher<T> {
         return new Flux<T>({
             subscribe: (subscriber: Subscriber<T>): Subscription => {
                 const seen = new Set<T>();
+                let sourceSub!: Subscription;
                 const sub = this.source.subscribe({
-                    onSubscribe(_s) {},
-                    onNext(v) { if (!seen.has(v)) { seen.add(v); subscriber.onNext(v); } },
+                    onSubscribe(s) { sourceSub = s; },
+                    onNext(v) { if (!seen.has(v)) { seen.add(v); subscriber.onNext(v); } else sourceSub.request(1); },
                     onError(e) { subscriber.onError(e); },
                     onComplete() { subscriber.onComplete(); }
                 });
@@ -1366,14 +1388,15 @@ export class Flux<T> implements PipePublisher<T> {
             subscribe: (subscriber: Subscriber<T>): Subscription => {
                 let prev: T | undefined;
                 let first = true;
+                let sourceSub!: Subscription;
                 const sub = this.source.subscribe({
-                    onSubscribe(_s) {},
+                    onSubscribe(s) { sourceSub = s; },
                     onNext(v) {
                         if (first || comparator(prev as T, v)) {
                             first = false;
                             prev = v;
                             subscriber.onNext(v);
-                        }
+                        } else sourceSub.request(1);
                     },
                     onError(e) { subscriber.onError(e); },
                     onComplete() { subscriber.onComplete(); }

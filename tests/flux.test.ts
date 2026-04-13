@@ -264,6 +264,14 @@ describe('Flux transformation operators', () => {
         it('passes through non-null values', () => {
             expect(collect(Flux.just('a', 'b').mapNotNull(s => s.toUpperCase()))).toEqual(['A', 'B']);
         });
+
+        it('replenishes demand when mapper returns null', () => {
+            // source: [1,2,3,4], mapNotNull(even only) → [2,4], request 2 → must receive [2,4]
+            const ts = new TestSubscriber<number>();
+            Flux.just(1, 2, 3, 4).mapNotNull(x => x % 2 === 0 ? x : null).subscribe(ts);
+            ts.request(2);
+            expect(ts.items).toEqual([2, 4]);
+        });
     });
 
     describe('flatMap', () => {
@@ -369,12 +377,12 @@ describe('Flux transformation operators', () => {
             expect(result).toEqual([2, 4]);
         });
 
-        it('can emit multiple items per input', () => {
+        it('only the first sink.next() per input is emitted (SynchronousSink semantics)', () => {
             const result = collect(Flux.just(1, 2).handle<number>((v, sink) => {
                 sink.next(v);
-                sink.next(v * 10);
+                sink.next(v * 10); // second call is ignored
             }));
-            expect(result).toEqual([1, 10, 2, 20]);
+            expect(result).toEqual([1, 2]);
         });
 
         it('can signal complete early', () => {
@@ -397,6 +405,16 @@ describe('Flux transformation operators', () => {
             Flux.just(1).handle<number>((_v, sink) => sink.error(err)).subscribe(ts);
             ts.requestUnbounded();
             expect(ts.error).toBe(err);
+        });
+
+        it('replenishes demand when handler emits nothing', () => {
+            // source: [1,2,3,4], handle(even only) → [2,4], request 2 → must receive [2,4]
+            const ts = new TestSubscriber<number>();
+            Flux.just(1, 2, 3, 4).handle<number>((v, sink) => {
+                if (v % 2 === 0) sink.next(v);
+            }).subscribe(ts);
+            ts.request(2);
+            expect(ts.items).toEqual([2, 4]);
         });
     });
 });
@@ -425,6 +443,14 @@ describe('Flux filtering operators', () => {
             Flux.empty<number>().filter(() => true).subscribe(ts);
             ts.requestUnbounded();
             expect(ts.completed).toBe(true);
+        });
+
+        it('replenishes demand when item is skipped', () => {
+            // source: [1,2,3,4,5,6], filter: even only → [2,4,6], request 3 → must receive all 3
+            const ts = new TestSubscriber<number>();
+            Flux.just(1, 2, 3, 4, 5, 6).filter(x => x % 2 === 0).subscribe(ts);
+            ts.request(3);
+            expect(ts.items).toEqual([2, 4, 6]);
         });
     });
 
@@ -519,6 +545,14 @@ describe('Flux filtering operators', () => {
         it('skip(0) emits all items', () => {
             expect(collect(Flux.just(1, 2).skip(0))).toEqual([1, 2]);
         });
+
+        it('replenishes demand for skipped leading items', () => {
+            // source: [1,2,3,4,5], skip(2) → [3,4,5], request 2 → must receive [3,4]
+            const ts = new TestSubscriber<number>();
+            Flux.just(1, 2, 3, 4, 5).skip(2).subscribe(ts);
+            ts.request(2);
+            expect(ts.items).toEqual([3, 4]);
+        });
     });
 
     describe('skipWhile', () => {
@@ -533,11 +567,27 @@ describe('Flux filtering operators', () => {
             expect(ts.items).toEqual([]);
             expect(ts.completed).toBe(true);
         });
+
+        it('replenishes demand for skipped leading items', () => {
+            // source: [1,2,3,4,5], skipWhile(x<3) → [3,4,5], request 2 → must receive [3,4]
+            const ts = new TestSubscriber<number>();
+            Flux.just(1, 2, 3, 4, 5).skipWhile(x => x < 3).subscribe(ts);
+            ts.request(2);
+            expect(ts.items).toEqual([3, 4]);
+        });
     });
 
     describe('distinct', () => {
         it('removes duplicate items', () => {
             expect(collect(Flux.just(1, 2, 1, 3, 2).distinct())).toEqual([1, 2, 3]);
+        });
+
+        it('replenishes demand for duplicate items', () => {
+            // source: [1,2,1,3,2,4], distinct → [1,2,3,4], request 3 → must receive [1,2,3]
+            const ts = new TestSubscriber<number>();
+            Flux.just(1, 2, 1, 3, 2, 4).distinct().subscribe(ts);
+            ts.request(3);
+            expect(ts.items).toEqual([1, 2, 3]);
         });
     });
 
@@ -551,6 +601,14 @@ describe('Flux filtering operators', () => {
                 Flux.just(1, 2, 3, 10, 11).distinctUntilChanged((a, b) => Math.floor(a / 10) !== Math.floor(b / 10))
             );
             expect(result).toEqual([1, 10]);
+        });
+
+        it('replenishes demand for consecutive duplicate items', () => {
+            // source: [1,1,2,2,3,3], distinctUntilChanged → [1,2,3], request 2 → must receive [1,2]
+            const ts = new TestSubscriber<number>();
+            Flux.just(1, 1, 2, 2, 3, 3).distinctUntilChanged().subscribe(ts);
+            ts.request(2);
+            expect(ts.items).toEqual([1, 2]);
         });
     });
 
