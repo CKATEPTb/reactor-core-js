@@ -8,6 +8,29 @@ import ReplayAllSink from "@/sinks/ReplayAllSink";
 import {AbstractPipePublisher} from "@/publishers/internal/AbstractPipePublisher";
 import {Schedulers} from "@/schedulers";
 
+/**
+ * A cold publisher of 0 to N items with full backpressure support.
+ *
+ * Items flow only when the downstream {@link Subscription} issues `request(n)`.
+ * The convenience `subscribe(onNext, onError, onComplete)` overloads
+ * automatically request `Number.MAX_SAFE_INTEGER` so items start arriving
+ * without extra ceremony.
+ *
+ * Each `subscribe()` call creates an **independent** run of the pipeline
+ * ("cold" semantics). Use {@link Flux.cache} or {@link Sinks} to share a
+ * single run across multiple subscribers.
+ *
+ * @typeParam T - The type of items emitted by this Flux.
+ *
+ * @example
+ * ```typescript
+ * Flux.just(1, 2, 3)
+ *   .map(n => n * 2)
+ *   .filter(n => n > 2)
+ *   .subscribe(v => console.log(v));
+ * // 4  6
+ * ```
+ */
 export class Flux<T> extends AbstractPipePublisher<T, Flux<T>> implements PipePublisher<T> {
 
     protected constructor(source: Publisher<T>) { super(source); }
@@ -20,14 +43,38 @@ export class Flux<T> extends AbstractPipePublisher<T, Flux<T>> implements PipePu
 
     // ─────────────────────────── Static factories ────────────────────────────
 
-    /** Wraps an existing Publisher as a Flux. */
+    /**
+     * Wraps an existing {@link Publisher} as a `Flux`.
+     *
+     * @param publisher - Any `Publisher<T>` to adapt.
+     * @returns A `Flux<T>` backed by the given publisher.
+     */
     public static from<T>(publisher: Publisher<T>): Flux<T> {
         return new Flux<T>(publisher);
     }
 
     /**
-     * Creates a Flux from a generator that can call sink.next() multiple times,
-     * then sink.complete() or sink.error(). Delivery respects backpressure.
+     * Creates a `Flux` from a generator function that pushes values imperatively.
+     *
+     * The generator receives a {@link Sink} and may call `sink.next(v)` any number
+     * of times, then `sink.complete()` or `sink.error(e)`.  Delivery is
+     * **backpressure-aware**: items pushed when demand is zero are buffered and
+     * delivered as downstream issues `request(n)`.
+     *
+     * Rule 1.3 is respected — `onSubscribe` is delivered to the subscriber
+     * **before** the generator runs.
+     *
+     * @param generator - Function that pushes items via the provided `Sink<T>`.
+     * @returns A cold `Flux<T>`.
+     *
+     * @example
+     * ```typescript
+     * Flux.generate<number>(sink => {
+     *   sink.next(1);
+     *   sink.next(2);
+     *   sink.complete();
+     * }).subscribe(v => console.log(v)); // 1  2
+     * ```
      */
     public static generate<T>(generator: (sink: Sink<T>) => void): Flux<T> {
         return new Flux<T>({
@@ -112,7 +159,18 @@ export class Flux<T> extends AbstractPipePublisher<T, Flux<T>> implements PipePu
         });
     }
 
-    /** Creates a Flux that emits all elements of the iterable in order. */
+    /**
+     * Creates a `Flux` that emits every element of an `Iterable` in order, then completes.
+     *
+     * @param iterable - Any `Iterable<T>` (Array, Set, Map, generator, etc.).
+     * @returns A cold `Flux<T>`.
+     *
+     * @example
+     * ```typescript
+     * Flux.fromIterable(['a', 'b', 'c']).subscribe(v => console.log(v));
+     * // a  b  c
+     * ```
+     */
     public static fromIterable<T>(iterable: Iterable<T>): Flux<T> {
         return Flux.generate<T>(sink => {
             for (const item of iterable) sink.next(item);
@@ -120,7 +178,18 @@ export class Flux<T> extends AbstractPipePublisher<T, Flux<T>> implements PipePu
         });
     }
 
-    /** Creates a Flux emitting integers from [start, start + count). */
+    /**
+     * Creates a `Flux` that emits `count` sequential integers starting at `start`.
+     *
+     * @param start - First integer to emit.
+     * @param count - Number of integers to emit.
+     * @returns A cold `Flux<number>` emitting `[start, start + count)`.
+     *
+     * @example
+     * ```typescript
+     * Flux.range(0, 5).subscribe(v => console.log(v)); // 0 1 2 3 4
+     * ```
+     */
     public static range(start: number, count: number): Flux<number> {
         return Flux.generate<number>(sink => {
             for (let i = 0; i < count; i++) sink.next(start + i);
@@ -128,7 +197,11 @@ export class Flux<T> extends AbstractPipePublisher<T, Flux<T>> implements PipePu
         });
     }
 
-    /** Completes immediately without emitting any value. */
+    /**
+     * Creates a `Flux` that completes immediately without emitting any items.
+     *
+     * @returns An empty, completed `Flux<T>`.
+     */
     public static empty<T = never>(): Flux<T> {
         return new Flux<T>({
             subscribe(subscriber: Subscriber<T>): Subscription {
@@ -140,7 +213,15 @@ export class Flux<T> extends AbstractPipePublisher<T, Flux<T>> implements PipePu
         });
     }
 
-    /** Lazily creates a Flux per subscription using the factory. */
+    /**
+     * Lazily creates a new `Flux` per subscription by calling `factory`.
+     *
+     * Useful when the source depends on mutable state that should be captured
+     * at subscribe time rather than at assembly time.
+     *
+     * @param factory - Called once per subscription to produce the actual `Flux<T>`.
+     * @returns A lazy `Flux<T>`.
+     */
     public static defer<T>(factory: () => Flux<T>): Flux<T> {
         return new Flux<T>({
             subscribe(subscriber: Subscriber<T>): Subscription {
@@ -149,12 +230,27 @@ export class Flux<T> extends AbstractPipePublisher<T, Flux<T>> implements PipePu
         });
     }
 
-    /** Creates a Flux that emits the provided items in order. */
+    /**
+     * Creates a `Flux` that emits the provided items in order, then completes.
+     *
+     * @param items - Zero or more items to emit.
+     * @returns A cold `Flux<T>`.
+     *
+     * @example
+     * ```typescript
+     * Flux.just(1, 2, 3).subscribe(v => console.log(v)); // 1  2  3
+     * ```
+     */
     public static just<T>(...items: T[]): Flux<T> {
         return Flux.fromIterable(items);
     }
 
-    /** Creates a Flux that immediately signals an error. */
+    /**
+     * Creates a `Flux` that signals `onError` immediately upon subscription.
+     *
+     * @param error - The error to signal.
+     * @returns An errored `Flux<T>`.
+     */
     public static error<T = never>(error: Error): Flux<T> {
         return new Flux<T>({
             subscribe(subscriber: Subscriber<T>): Subscription {
@@ -166,7 +262,12 @@ export class Flux<T> extends AbstractPipePublisher<T, Flux<T>> implements PipePu
         });
     }
 
-    /** Creates a Flux that never emits any signal. */
+    /**
+     * Creates a `Flux` that never emits any signal — no items, no error, no completion.
+     * Useful as a placeholder or to represent an infinite, empty stream.
+     *
+     * @returns A `Flux<T>` that stays subscribed forever.
+     */
     public static never<T = never>(): Flux<T> {
         return new Flux<T>({
             subscribe(subscriber: Subscriber<T>): Subscription {
@@ -179,6 +280,20 @@ export class Flux<T> extends AbstractPipePublisher<T, Flux<T>> implements PipePu
 
     // ─────────────────── PipePublisher operators ──────────────────
 
+    /**
+     * Transforms each item using `fn`, producing a `Flux<R>`.
+     *
+     * If `fn` throws, the exception is forwarded to `onError` and the stream terminates.
+     *
+     * @param fn - Mapping function applied to every item.
+     * @returns A new `Flux<R>`.
+     *
+     * @example
+     * ```typescript
+     * Flux.just(1, 2, 3).map(n => n * 10).subscribe(v => console.log(v));
+     * // 10  20  30
+     * ```
+     */
     public map<R>(fn: (value: T) => R): Flux<R> {
         return new Flux<R>({
             subscribe: (subscriber: Subscriber<R>): Subscription => {
@@ -197,6 +312,23 @@ export class Flux<T> extends AbstractPipePublisher<T, Flux<T>> implements PipePu
         });
     }
 
+    /**
+     * Transforms each item with `fn`, silently discarding `null`/`undefined` results.
+     *
+     * When an item is discarded, upstream demand is replenished by 1 so the
+     * downstream demand accounting stays correct.
+     *
+     * @param fn - Mapping function; returning `null` or `undefined` skips the item.
+     * @returns A `Flux<NonNullable<R>>` with nulls filtered out.
+     *
+     * @example
+     * ```typescript
+     * Flux.just('hello', '', 'world')
+     *   .mapNotNull(s => s.length > 0 ? s : null)
+     *   .subscribe(v => console.log(v));
+     * // hello  world
+     * ```
+     */
     public mapNotNull<R>(fn: (value: T) => R | null | undefined): Flux<NonNullable<R>> {
         return new Flux<NonNullable<R>>({
             subscribe: (subscriber: Subscriber<NonNullable<R>>): Subscription => {
@@ -222,10 +354,28 @@ export class Flux<T> extends AbstractPipePublisher<T, Flux<T>> implements PipePu
     }
 
     /**
-     * Flexible per-element transformation: handler may emit 0 or 1 item per input via sink.next(),
-     * or signal error/complete. Emitting more than once per input is ignored (0-or-1 semantics,
-     * matching reactor-core SynchronousSink). When 0 items are emitted, upstream is replenished
-     * with request(1) to compensate for the skipped demand.
+     * Fine-grained per-item transform: the `handler` receives each item together with
+     * a {@link Sink} and may emit **0 or 1** result items.
+     *
+     * - Calling `sink.next(r)` once emits `r` downstream.
+     * - Calling `sink.next(r)` more than once is silently ignored (0-or-1 semantics).
+     * - Calling `sink.complete()` or `sink.error(e)` terminates the stream early.
+     * - If the handler emits nothing (0 items), upstream demand is replenished by 1.
+     *
+     * This is the Flux equivalent of `reactor-core`'s `handle(BiConsumer<T, SynchronousSink<R>>)`.
+     *
+     * @param handler - Called for each upstream item with the item and an output `Sink<R>`.
+     * @returns A `Flux<R>`.
+     *
+     * @example
+     * ```typescript
+     * // Convert strings to numbers, skip non-numeric entries
+     * Flux.just('1', 'two', '3').handle<number>((s, sink) => {
+     *   const n = parseInt(s);
+     *   if (!isNaN(n)) sink.next(n);
+     * }).subscribe(v => console.log(v));
+     * // 1  3
+     * ```
      */
     public handle<R>(handler: (value: T, sink: Sink<R>) => void): Flux<R> {
         return new Flux<R>({
@@ -258,7 +408,26 @@ export class Flux<T> extends AbstractPipePublisher<T, Flux<T>> implements PipePu
         });
     }
 
-    /** Merge-style flatMap: subscribes to each inner publisher concurrently as values arrive. */
+    /**
+     * Maps each item to an inner publisher and merges all inner publishers concurrently
+     * into a single `Flux<R>` (**merge** semantics).
+     *
+     * Inner publishers are subscribed to as soon as their corresponding outer item arrives.
+     * Items from different inner publishers can interleave. The resulting stream completes
+     * when the outer source completes **and** all inner publishers complete. Any error
+     * (from outer or any inner) immediately terminates the stream.
+     *
+     * @param fn - Maps each item to a `Flux<R>`, `Mono<R>`, or any `Publisher<R>`.
+     * @returns A merged `Flux<R>`.
+     *
+     * @example
+     * ```typescript
+     * Flux.just(1, 2, 3)
+     *   .flatMap(n => Mono.just(n * 10))
+     *   .subscribe(v => console.log(v));
+     * // 10  20  30  (order may vary with async inner publishers)
+     * ```
+     */
     public flatMap<R>(fn: (value: T) => Flux<R>): Flux<R>;
     public flatMap<R>(fn: (value: T) => Mono<R>): Flux<R>;
     public flatMap<R>(fn: (value: T) => Publisher<R>): Flux<R>;
@@ -333,7 +502,24 @@ export class Flux<T> extends AbstractPipePublisher<T, Flux<T>> implements PipePu
         });
     }
 
-    /** Sequential flatMap: subscribes to each inner publisher one at a time, in order. */
+    /**
+     * Maps each item to an inner publisher and subscribes to them **sequentially**,
+     * preserving order (**concat** semantics).
+     *
+     * The next inner publisher is subscribed to only after the previous one completes.
+     * This guarantees item ordering but has no concurrency.
+     *
+     * @param fn - Maps each item to a `Flux<R>`, `Mono<R>`, or any `Publisher<R>`.
+     * @returns An ordered, sequential `Flux<R>`.
+     *
+     * @example
+     * ```typescript
+     * Flux.just(1, 2, 3)
+     *   .concatMap(n => Mono.just(`item-${n}`))
+     *   .subscribe(v => console.log(v));
+     * // item-1  item-2  item-3
+     * ```
+     */
     public concatMap<R>(fn: (value: T) => Flux<R>): Flux<R>;
     public concatMap<R>(fn: (value: T) => Mono<R>): Flux<R>;
     public concatMap<R>(fn: (value: T) => Publisher<R>): Flux<R>;
@@ -400,7 +586,17 @@ export class Flux<T> extends AbstractPipePublisher<T, Flux<T>> implements PipePu
         });
     }
 
-    /** Like flatMap but cancels the previous inner subscription when a new outer value arrives. */
+    /**
+     * Maps each item to an inner publisher, **cancelling** the previous inner subscription
+     * whenever a new outer item arrives (**switch** semantics).
+     *
+     * Only the most recently started inner publisher is active at any point. This is
+     * useful for patterns like "search as you type" where stale results should be
+     * discarded when a newer request supersedes them.
+     *
+     * @param fn - Maps each item to a `Flux<R>`, `Mono<R>`, or any `Publisher<R>`.
+     * @returns A `Flux<R>` that tracks only the latest inner publisher.
+     */
     public switchMap<R>(fn: (value: T) => Flux<R>): Flux<R>;
     public switchMap<R>(fn: (value: T) => Mono<R>): Flux<R>;
     public switchMap<R>(fn: (value: T) => Publisher<R>): Flux<R>;
@@ -476,6 +672,21 @@ export class Flux<T> extends AbstractPipePublisher<T, Flux<T>> implements PipePu
         });
     }
 
+    /**
+     * Passes only items for which `predicate` returns `true`.
+     *
+     * Each dropped item replenishes upstream demand by 1 to keep the total
+     * outstanding demand accurate.
+     *
+     * @param predicate - Synchronous test applied to each item.
+     * @returns A filtered `Flux<T>`.
+     *
+     * @example
+     * ```typescript
+     * Flux.just(1, 2, 3, 4).filter(n => n % 2 === 0).subscribe(v => console.log(v));
+     * // 2  4
+     * ```
+     */
     public filter(predicate: (value: T) => boolean): Flux<T> {
         return new Flux<T>({
             subscribe: (subscriber: Subscriber<T>): Subscription => {
@@ -497,7 +708,15 @@ export class Flux<T> extends AbstractPipePublisher<T, Flux<T>> implements PipePu
         });
     }
 
-    /** Async filter: for each item, subscribe to the predicate publisher; forward item only if it emits true. */
+    /**
+     * Asynchronous filter: for each item, subscribes to `predicate(item)` and forwards
+     * the item downstream only if the predicate publisher emits `true`.
+     *
+     * Implemented via {@link concatMap} — predicates run sequentially.
+     *
+     * @param predicate - Returns a `Publisher<boolean>` for each item.
+     * @returns A filtered `Flux<T>`.
+     */
     public filterWhen(predicate: (value: T) => Publisher<boolean>): Flux<T> {
         return this.concatMap(v =>
             Flux.from(predicate(v))
@@ -506,9 +725,24 @@ export class Flux<T> extends AbstractPipePublisher<T, Flux<T>> implements PipePu
         );
     }
 
+    /**
+     * Unsafe type cast — changes the declared element type to `R` without any
+     * runtime conversion.  Use only when you are certain the actual runtime
+     * type is compatible.
+     *
+     * @typeParam R - The target element type.
+     * @returns This `Flux` re-typed as `Flux<R>`.
+     */
     public cast<R>(): Flux<R> { return new Flux<R>(this.source as unknown as Publisher<R>); }
 
-    /** Emit only the first n items, then cancel and complete. */
+    /**
+     * Emits at most `n` items, then cancels the upstream subscription and completes.
+     *
+     * If `n ≤ 0`, returns an empty `Flux` immediately.
+     *
+     * @param n - Maximum number of items to emit.
+     * @returns A bounded `Flux<T>`.
+     */
     public take(n: number): Flux<T> {
         if (n <= 0) return Flux.empty<T>();
         return new Flux<T>({
@@ -545,7 +779,13 @@ export class Flux<T> extends AbstractPipePublisher<T, Flux<T>> implements PipePu
         });
     }
 
-    /** Forward items while predicate returns true; complete as soon as it returns false. */
+    /**
+     * Emits items while `predicate(item)` returns `true`.
+     * Completes (and cancels upstream) on the first item for which it returns `false`.
+     *
+     * @param predicate - Tested synchronously for each item.
+     * @returns A `Flux<T>` that stops on the first `false`.
+     */
     public takeWhile(predicate: (value: T) => boolean): Flux<T> {
         return new Flux<T>({
             subscribe: (subscriber: Subscriber<T>): Subscription => {
@@ -586,7 +826,15 @@ export class Flux<T> extends AbstractPipePublisher<T, Flux<T>> implements PipePu
         });
     }
 
-    /** Forward items until the trigger Publisher emits, then cancel and complete. */
+    /**
+     * Forwards items from this `Flux` until `trigger` emits its first item (or completes),
+     * then cancels the source and completes downstream.
+     *
+     * If `trigger` signals an error, that error is forwarded to the subscriber.
+     *
+     * @param trigger - A `Publisher` whose first emission ends this stream.
+     * @returns A `Flux<T>` that stops when the trigger fires.
+     */
     public takeUntilOther(trigger: Publisher<unknown>): Flux<T> {
         return new Flux<T>({
             subscribe: (subscriber: Subscriber<T>): Subscription => {
@@ -627,6 +875,13 @@ export class Flux<T> extends AbstractPipePublisher<T, Flux<T>> implements PipePu
     }
 
     /** Emit defaultValue if source completes without emitting any item. */
+    /**
+     * Emits `value` if the source completes without having emitted any items,
+     * then completes.  If the source does emit items, they pass through unchanged.
+     *
+     * @param value - Fallback item to emit when the source is empty.
+     * @returns A `Flux<T>` that is never empty.
+     */
     public defaultIfEmpty(value: T): Flux<T> {
         return new Flux<T>({
             subscribe: (subscriber: Subscriber<T>): Subscription => {
@@ -646,7 +901,15 @@ export class Flux<T> extends AbstractPipePublisher<T, Flux<T>> implements PipePu
         });
     }
 
-    /** Resubscribe to source on error, up to maxRetries times (default: unlimited). */
+    /**
+     * Re-subscribes to the source on `onError`, up to `maxRetries` times.
+     *
+     * Accumulated downstream demand from previous attempts is preserved across retries.
+     * If the error persists after all retries are exhausted, it is forwarded to downstream.
+     *
+     * @param maxRetries - Maximum number of retry attempts (default: `Number.MAX_SAFE_INTEGER`).
+     * @returns A `Flux<T>` with automatic retry on error.
+     */
     public retry(maxRetries: number = Number.MAX_SAFE_INTEGER): Flux<T> {
         return new Flux<T>({
             subscribe: (subscriber: Subscriber<T>): Subscription => {
@@ -697,7 +960,22 @@ export class Flux<T> extends AbstractPipePublisher<T, Flux<T>> implements PipePu
 
     // ──────────────────── Scan / Zip ────────────────────────────────
 
-    /** Emit running accumulation starting with the first item as initial accumulator. */
+    /**
+     * Emits a running accumulation of the stream.
+     *
+     * The first item is emitted as-is and becomes the initial accumulator.
+     * Each subsequent item is combined with the running accumulator using `reducer`,
+     * and the result is emitted downstream.
+     *
+     * @param reducer - Combines the running accumulator with the next item.
+     * @returns A `Flux<T>` of intermediate accumulation results.
+     *
+     * @example
+     * ```typescript
+     * Flux.just(1, 2, 3, 4).scan((acc, n) => acc + n).subscribe(v => console.log(v));
+     * // 1  3  6  10
+     * ```
+     */
     public scan(reducer: (acc: T, next: T) => T): Flux<T> {
         return new Flux<T>({
             subscribe: (subscriber: Subscriber<T>): Subscription => {
@@ -719,7 +997,23 @@ export class Flux<T> extends AbstractPipePublisher<T, Flux<T>> implements PipePu
         });
     }
 
-    /** Emit running accumulation with an explicit seed from the factory. */
+    /**
+     * Emits a running accumulation of the stream with an explicit seed value.
+     *
+     * `seedFactory` is called once per subscription to produce the initial accumulator.
+     * Each upstream item is folded into the accumulator and the intermediate result is
+     * emitted downstream.
+     *
+     * @param seedFactory - Called per subscription to produce the initial accumulator of type `A`.
+     * @param reducer - Combines the current accumulator with the next item.
+     * @returns A `Flux<A>` of intermediate accumulation results.
+     *
+     * @example
+     * ```typescript
+     * Flux.just(1, 2, 3).scanWith(() => 0, (acc, n) => acc + n).subscribe(v => console.log(v));
+     * // 1  3  6
+     * ```
+     */
     public scanWith<A>(seedFactory: () => A, reducer: (acc: A, next: T) => A): Flux<A> {
         return new Flux<A>({
             subscribe: (subscriber: Subscriber<A>): Subscription => {
@@ -736,7 +1030,24 @@ export class Flux<T> extends AbstractPipePublisher<T, Flux<T>> implements PipePu
         });
     }
 
-    /** Pair-wise combine this Flux with another Publisher using the combiner function. */
+    /**
+     * Pair-wise combines items from this `Flux` and `other` using `combiner`.
+     *
+     * Items are matched by position: the first item from each source is combined, then the second, etc.
+     * The stream completes when either source completes. If either source errors, the error is forwarded.
+     *
+     * @param other - The second publisher to zip with.
+     * @param combiner - Combines one item from each source into a result item.
+     * @returns A `Flux<V>` of combined pairs.
+     *
+     * @example
+     * ```typescript
+     * Flux.just(1, 2, 3)
+     *   .zipWith(Flux.just('a', 'b', 'c'), (n, s) => `${n}${s}`)
+     *   .subscribe(v => console.log(v));
+     * // 1a  2b  3c
+     * ```
+     */
     public zipWith<R, V>(other: Publisher<R>, combiner: (a: T, b: R) => V): Flux<V> {
         return new Flux<V>({
             subscribe: (subscriber: Subscriber<V>): Subscription => {
@@ -806,6 +1117,15 @@ export class Flux<T> extends AbstractPipePublisher<T, Flux<T>> implements PipePu
 
     // ──────────────────── Side effects ───────────────────────────────
 
+    /**
+     * Executes a side-effect function when the source completes normally.
+     *
+     * The function runs just before `onComplete` is forwarded to the downstream subscriber.
+     * Any exception thrown by `fn` is silently swallowed.
+     *
+     * @param fn - Side-effect to run on normal completion.
+     * @returns A `Flux<T>` with the side effect attached.
+     */
     public doOnComplete(fn: () => void): Flux<T> {
         return new Flux<T>({
             subscribe: (subscriber: Subscriber<T>): Subscription => {
@@ -821,7 +1141,16 @@ export class Flux<T> extends AbstractPipePublisher<T, Flux<T>> implements PipePu
         });
     }
 
-    /** Side effect run on either onComplete or onError. */
+    /**
+     * Executes a side-effect function when the source terminates — either normally (`onComplete`)
+     * or with an error (`onError`).
+     *
+     * The function runs before the terminal signal is forwarded downstream.
+     * Any exception thrown by `fn` is silently swallowed.
+     *
+     * @param fn - Side-effect to run on any terminal signal.
+     * @returns A `Flux<T>` with the side effect attached.
+     */
     public doOnTerminate(fn: () => void): Flux<T> {
         return new Flux<T>({
             subscribe: (subscriber: Subscriber<T>): Subscription => {
@@ -837,7 +1166,15 @@ export class Flux<T> extends AbstractPipePublisher<T, Flux<T>> implements PipePu
         });
     }
 
-    /** Side effect run on cancellation (unsubscribe). */
+    /**
+     * Executes a side-effect function when the downstream subscriber cancels
+     * (calls `unsubscribe()`).
+     *
+     * Any exception thrown by `fn` is silently swallowed.
+     *
+     * @param fn - Side-effect to run on cancellation.
+     * @returns A `Flux<T>` with the side effect attached.
+     */
     public doOnCancel(fn: () => void): Flux<T> {
         return new Flux<T>({
             subscribe: (subscriber: Subscriber<T>): Subscription => {
@@ -857,6 +1194,15 @@ export class Flux<T> extends AbstractPipePublisher<T, Flux<T>> implements PipePu
         });
     }
 
+    /**
+     * Executes a side-effect function after the stream ends for **any** reason —
+     * normal completion, error, or cancellation.
+     *
+     * Any exception thrown by `fn` is silently swallowed.
+     *
+     * @param fn - Side-effect to run after any terminal event or cancellation.
+     * @returns A `Flux<T>` with the side effect attached.
+     */
     public doFinally(fn: () => void): Flux<T> {
         return new Flux<T>({
             subscribe: (subscriber: Subscriber<T>): Subscription => {
@@ -878,6 +1224,18 @@ export class Flux<T> extends AbstractPipePublisher<T, Flux<T>> implements PipePu
 
     // ──────────────────── Scheduling ────────────────────────────────
 
+    /**
+     * Low-level escape hatch for bridging imperative push-based sources.
+     *
+     * The `producer` receives three callbacks and must call them to drive the stream.
+     * `onRequest` and `onUnsubscribe` let the caller respond to downstream demand and
+     * cancellation respectively.
+     *
+     * @param producer - Callback that receives `(onNext, onError, onComplete)` and drives the stream.
+     * @param onRequest - Called when the downstream subscriber requests `n` more items.
+     * @param onUnsubscribe - Called when the downstream subscriber cancels.
+     * @returns A `Flux<R>` backed by the imperative producer.
+     */
     public pipe<R>(
         producer: (onNext: (value: R) => void, onError: (error: Error) => void, onComplete: () => void) => void,
         onRequest: (request: number) => void,
@@ -895,7 +1253,14 @@ export class Flux<T> extends AbstractPipePublisher<T, Flux<T>> implements PipePu
 
     // ──────────────────── Flux-specific operators ────────────────────────
 
-    /** Take first item as a Mono (empty if source is empty). */
+    /**
+     * Returns the first item of this `Flux` as a `Mono`.
+     *
+     * If the source is empty, the resulting `Mono` completes without emitting a value.
+     * The source subscription is cancelled immediately after the first item is received.
+     *
+     * @returns A `Mono<T>` that emits the first item, or completes empty.
+     */
     public first(): Mono<T> {
         return Mono.generate<T>(sink => {
             const sub = this.source.subscribe({
@@ -908,7 +1273,14 @@ export class Flux<T> extends AbstractPipePublisher<T, Flux<T>> implements PipePu
         });
     }
 
-    /** Take the last item as a Mono (empty if source is empty). */
+    /**
+     * Returns the last item of this `Flux` as a `Mono`.
+     *
+     * The source is fully consumed before the value is emitted.
+     * If the source is empty, the resulting `Mono` completes without emitting a value.
+     *
+     * @returns A `Mono<T>` that emits the last item, or completes empty.
+     */
     public last(): Mono<T> {
         return Mono.generate<T>(sink => {
             let last: T | undefined;
@@ -926,6 +1298,13 @@ export class Flux<T> extends AbstractPipePublisher<T, Flux<T>> implements PipePu
         });
     }
 
+    /**
+     * Counts all items emitted by this `Flux` and emits the total as a `Mono<number>`.
+     *
+     * The source is fully consumed before the count is emitted.
+     *
+     * @returns A `Mono<number>` emitting the number of items.
+     */
     public count(): Mono<number> {
         return Mono.generate<number>(sink => {
             let n = 0;
@@ -939,6 +1318,13 @@ export class Flux<T> extends AbstractPipePublisher<T, Flux<T>> implements PipePu
         });
     }
 
+    /**
+     * Emits `true` if this `Flux` emits at least one item, `false` if it completes empty.
+     *
+     * The source subscription is cancelled as soon as the first item is observed.
+     *
+     * @returns A `Mono<boolean>`.
+     */
     public hasElements(): Mono<boolean> {
         return Mono.generate<boolean>(sink => {
             const sub = this.source.subscribe({
@@ -951,7 +1337,15 @@ export class Flux<T> extends AbstractPipePublisher<T, Flux<T>> implements PipePu
         });
     }
 
-    /** Emit true if any item matches the predicate. Short-circuits on first match. */
+    /**
+     * Emits `true` if any item matches `predicate`, `false` if none do.
+     *
+     * Short-circuits: cancels the source and emits `true` on the first matching item.
+     * If `predicate` throws, the error is forwarded to the subscriber.
+     *
+     * @param predicate - Test applied to each item.
+     * @returns A `Mono<boolean>`.
+     */
     public any(predicate: (value: T) => boolean): Mono<boolean> {
         return Mono.generate<boolean>(sink => {
             const sub = this.source.subscribe({
@@ -968,7 +1362,15 @@ export class Flux<T> extends AbstractPipePublisher<T, Flux<T>> implements PipePu
         });
     }
 
-    /** Emit true if all items match the predicate. Short-circuits on first mismatch. */
+    /**
+     * Emits `true` if every item matches `predicate`, `false` if any item does not.
+     *
+     * Short-circuits: cancels the source and emits `false` on the first non-matching item.
+     * If `predicate` throws, the error is forwarded to the subscriber.
+     *
+     * @param predicate - Test applied to each item.
+     * @returns A `Mono<boolean>`.
+     */
     public all(predicate: (value: T) => boolean): Mono<boolean> {
         return Mono.generate<boolean>(sink => {
             const sub = this.source.subscribe({
@@ -985,12 +1387,28 @@ export class Flux<T> extends AbstractPipePublisher<T, Flux<T>> implements PipePu
         });
     }
 
-    /** Emit true if no items match the predicate. */
+    /**
+     * Emits `true` if no item matches `predicate`, `false` if any item does.
+     *
+     * This is the logical negation of {@link any}.
+     *
+     * @param predicate - Test applied to each item.
+     * @returns A `Mono<boolean>`.
+     */
     public none(predicate: (value: T) => boolean): Mono<boolean> {
         return this.any(predicate).map(v => !v);
     }
 
-    /** Get the item at the given zero-based index. Completes empty if index is out of range (or emits defaultValue). */
+    /**
+     * Returns the item at zero-based `index` as a `Mono<T>`.
+     *
+     * If the source completes before reaching `index`, emits `defaultValue` if provided,
+     * otherwise completes empty.
+     *
+     * @param index - Zero-based position of the desired item.
+     * @param defaultValue - Optional fallback value emitted if the index is out of range.
+     * @returns A `Mono<T>`.
+     */
     public elementAt(index: number, defaultValue?: T): Mono<T> {
         return Mono.generate<T>(sink => {
             let i = 0;
@@ -1009,7 +1427,13 @@ export class Flux<T> extends AbstractPipePublisher<T, Flux<T>> implements PipePu
         });
     }
 
-    /** Collect all items into an array and emit as a Mono. */
+    /**
+     * Collects all items into an array and emits the complete array as a `Mono<T[]>`.
+     *
+     * The source is fully consumed before the array is emitted.
+     *
+     * @returns A `Mono<T[]>` containing all emitted items.
+     */
     public collect(_force: boolean = false): Mono<T[]> {
         return Mono.generate<T[]>(sink => {
             const items: T[] = [];
@@ -1023,12 +1447,24 @@ export class Flux<T> extends AbstractPipePublisher<T, Flux<T>> implements PipePu
         });
     }
 
-    /** Alias for collect(). */
+    /**
+     * Alias for {@link collect}.
+     *
+     * @returns A `Mono<T[]>` containing all emitted items.
+     */
     public collectList(): Mono<T[]> {
         return this.collect();
     }
 
-    /** Collect all items and emit them sorted. */
+    /**
+     * Collects all items, sorts them, and re-emits them as a `Flux<T>`.
+     *
+     * Uses the native `Array.sort` algorithm. When no `comparator` is provided the
+     * default lexicographic sort order is used.
+     *
+     * @param comparator - Optional comparison function (same signature as `Array.sort`).
+     * @returns A `Flux<T>` that emits items in sorted order after the source completes.
+     */
     public sort(comparator?: (a: T, b: T) => number): Flux<T> {
         return Flux.defer(() =>
             Flux.from(this.collect().map(arr => {
@@ -1038,7 +1474,21 @@ export class Flux<T> extends AbstractPipePublisher<T, Flux<T>> implements PipePu
         );
     }
 
-    /** Collect items into arrays of maxSize, emitting each full batch (and the last partial batch on complete). */
+    /**
+     * Collects items into fixed-size arrays and emits each batch as a `T[]`.
+     *
+     * A batch is emitted as soon as it reaches `maxSize` items.
+     * The final (potentially partial) batch is emitted when the source completes.
+     *
+     * @param maxSize - Maximum number of items per batch.
+     * @returns A `Flux<T[]>` of item batches.
+     *
+     * @example
+     * ```typescript
+     * Flux.range(1, 5).buffer(2).subscribe(v => console.log(v));
+     * // [1, 2]  [3, 4]  [5]
+     * ```
+     */
     public buffer(maxSize: number): Flux<T[]> {
         return new Flux<T[]>({
             subscribe: (subscriber: Subscriber<T[]>): Subscription => {
@@ -1064,7 +1514,14 @@ export class Flux<T> extends AbstractPipePublisher<T, Flux<T>> implements PipePu
         });
     }
 
-    /** Cache all emitted items and replay them to each new subscriber. Connects to source on first subscription. */
+    /**
+     * Caches all emitted items and replays them to each new subscriber.
+     *
+     * The source is subscribed to on the **first** downstream subscription (lazy connect).
+     * Subsequent subscribers receive a replay of all previously emitted items from the cache.
+     *
+     * @returns A cached, replayable `Flux<T>`.
+     */
     public cache(): Flux<T> {
         const sink = new ReplayAllSink<T>();
         let connected = false;
@@ -1085,6 +1542,17 @@ export class Flux<T> extends AbstractPipePublisher<T, Flux<T>> implements PipePu
         });
     }
 
+    /**
+     * Pairs each item with its zero-based index, emitting `[index, item]` tuples.
+     *
+     * @returns A `Flux<[number, T]>` where the first element is the zero-based index.
+     *
+     * @example
+     * ```typescript
+     * Flux.just('a', 'b', 'c').indexed().subscribe(([i, v]) => console.log(i, v));
+     * // 0 a  1 b  2 c
+     * ```
+     */
     public indexed(): Flux<[number, T]> {
         return new Flux<[number, T]>({
             subscribe: (subscriber: Subscriber<[number, T]>): Subscription => {
@@ -1101,6 +1569,14 @@ export class Flux<T> extends AbstractPipePublisher<T, Flux<T>> implements PipePu
         });
     }
 
+    /**
+     * Skips the first `n` items from the source, then forwards the rest.
+     *
+     * Skipped items replenish upstream demand so the overall demand accounting stays correct.
+     *
+     * @param n - Number of leading items to skip.
+     * @returns A `Flux<T>` without the first `n` items.
+     */
     public skip(n: number): Flux<T> {
         return new Flux<T>({
             subscribe: (subscriber: Subscriber<T>): Subscription => {
@@ -1121,6 +1597,16 @@ export class Flux<T> extends AbstractPipePublisher<T, Flux<T>> implements PipePu
         });
     }
 
+    /**
+     * Skips items while `predicate` returns `true`, then forwards all subsequent items
+     * regardless of the predicate.
+     *
+     * Skipped items replenish upstream demand. Once the predicate returns `false`, it is
+     * never evaluated again.
+     *
+     * @param predicate - Tested against each item until it returns `false`.
+     * @returns A `Flux<T>` that starts forwarding items after the first predicate failure.
+     */
     public skipWhile(predicate: (value: T) => boolean): Flux<T> {
         return new Flux<T>({
             subscribe: (subscriber: Subscriber<T>): Subscription => {
@@ -1142,6 +1628,15 @@ export class Flux<T> extends AbstractPipePublisher<T, Flux<T>> implements PipePu
         });
     }
 
+    /**
+     * Gates items from this `Flux` until `other` emits its first item.
+     *
+     * Items arriving before the gate opens are silently dropped (demand is replenished).
+     * If `other` signals an error, the error is forwarded to downstream.
+     *
+     * @param other - A `Publisher` whose first emission opens the gate.
+     * @returns A `Flux<T>` that starts forwarding items once `other` emits.
+     */
     public skipUntil(other: Publisher<unknown>): Flux<T> {
         return new Flux<T>({
             subscribe: (subscriber: Subscriber<T>): Subscription => {
@@ -1169,6 +1664,14 @@ export class Flux<T> extends AbstractPipePublisher<T, Flux<T>> implements PipePu
         });
     }
 
+    /**
+     * Filters out duplicate items, forwarding only items not seen before.
+     *
+     * Uses a `Set` with reference equality (`===`) to track seen values.
+     * Duplicates replenish upstream demand.
+     *
+     * @returns A `Flux<T>` with all duplicate items removed.
+     */
     public distinct(): Flux<T> {
         return new Flux<T>({
             subscribe: (subscriber: Subscriber<T>): Subscription => {
@@ -1186,6 +1689,23 @@ export class Flux<T> extends AbstractPipePublisher<T, Flux<T>> implements PipePu
         });
     }
 
+    /**
+     * Suppresses consecutive duplicate items.
+     *
+     * An item is forwarded only when it is different from the immediately preceding item
+     * as determined by `comparator`. The default comparator uses `!==`.
+     * Suppressed items replenish upstream demand.
+     *
+     * @param comparator - Returns `true` when two consecutive items are considered different
+     *                     (default: `(a, b) => a !== b`).
+     * @returns A `Flux<T>` without consecutive duplicates.
+     *
+     * @example
+     * ```typescript
+     * Flux.just(1, 1, 2, 2, 3).distinctUntilChanged().subscribe(v => console.log(v));
+     * // 1  2  3
+     * ```
+     */
     public distinctUntilChanged(comparator: (a: T, b: T) => boolean = (a, b) => a !== b): Flux<T> {
         return new Flux<T>({
             subscribe: (subscriber: Subscriber<T>): Subscription => {
@@ -1210,6 +1730,15 @@ export class Flux<T> extends AbstractPipePublisher<T, Flux<T>> implements PipePu
         });
     }
 
+    /**
+     * Delays the delivery of each item by `ms` milliseconds using the delay scheduler.
+     *
+     * The source is subscribed to at full speed; each emitted item is individually
+     * scheduled for delivery after the specified delay.
+     *
+     * @param ms - Delay in milliseconds applied to each item.
+     * @returns A `Flux<T>` with delayed item delivery.
+     */
     public delayElements(ms: number): Flux<T> {
         return new Flux<T>({
             subscribe: (subscriber: Subscriber<T>): Subscription => {
@@ -1225,6 +1754,16 @@ export class Flux<T> extends AbstractPipePublisher<T, Flux<T>> implements PipePu
         });
     }
 
+    /**
+     * Appends `other` to this `Flux`, subscribing to `other` only after this source completes.
+     *
+     * Items from this source are emitted first, in order.  Once this source completes,
+     * items from `other` are emitted.  If either source errors, the error is forwarded
+     * and `other` is not subscribed to.
+     *
+     * @param other - The publisher to concatenate after this source.
+     * @returns A `Flux<T>` that emits items from both sources sequentially.
+     */
     public concatWith(other: Publisher<T>): Flux<T> {
         return new Flux<T>({
             subscribe: (subscriber: Subscriber<T>): Subscription => {
@@ -1269,6 +1808,16 @@ export class Flux<T> extends AbstractPipePublisher<T, Flux<T>> implements PipePu
         });
     }
 
+    /**
+     * Merges this `Flux` with `other`, subscribing to both concurrently.
+     *
+     * Items from both sources are interleaved as they arrive. The resulting stream
+     * completes when **both** sources complete. Any error from either source terminates
+     * the merged stream immediately.
+     *
+     * @param other - The publisher to merge with this source.
+     * @returns A `Flux<T>` that emits items from both sources concurrently.
+     */
     public mergeWith(other: Publisher<T>): Flux<T> {
         return new Flux<T>({
             subscribe: (subscriber: Subscriber<T>): Subscription => {
@@ -1322,6 +1871,21 @@ export class Flux<T> extends AbstractPipePublisher<T, Flux<T>> implements PipePu
         });
     }
 
+    /**
+     * Reduces the stream to a single value using `reducer`, emitting the final result as a `Mono<T>`.
+     *
+     * The first item becomes the initial accumulator. If the source is empty, the resulting
+     * `Mono` completes without emitting a value.
+     *
+     * @param reducer - Combines the running accumulator with the next item.
+     * @returns A `Mono<T>` emitting the final reduced value.
+     *
+     * @example
+     * ```typescript
+     * Flux.just(1, 2, 3, 4).reduce((acc, n) => acc + n).subscribe(v => console.log(v));
+     * // 10
+     * ```
+     */
     public reduce(reducer: (acc: T, next: T) => T): Mono<T> {
         return Mono.generate<T>(sink => {
             let acc: T | undefined;
@@ -1339,6 +1903,23 @@ export class Flux<T> extends AbstractPipePublisher<T, Flux<T>> implements PipePu
         });
     }
 
+    /**
+     * Reduces the stream to a single value of type `A`, using an explicit seed, and emits it as `Mono<A>`.
+     *
+     * `seedFactory` is called once per subscription to produce the initial accumulator.
+     * Unlike {@link reduce}, this always emits a value even if the source is empty (the seed).
+     *
+     * @param seedFactory - Produces the initial accumulator value per subscription.
+     * @param reducer - Combines the running accumulator with the next item.
+     * @returns A `Mono<A>` emitting the final reduced value.
+     *
+     * @example
+     * ```typescript
+     * Flux.just(1, 2, 3)
+     *   .reduceWith(() => '', (acc, n) => acc + n)
+     *   .subscribe(v => console.log(v)); // '123'
+     * ```
+     */
     public reduceWith<A>(seedFactory: () => A, reducer: (acc: A, next: T) => A): Mono<A> {
         return Mono.generate<A>(sink => {
             let acc = seedFactory();
@@ -1352,6 +1933,14 @@ export class Flux<T> extends AbstractPipePublisher<T, Flux<T>> implements PipePu
         });
     }
 
+    /**
+     * Ignores all items from this `Flux` and emits a single `void` value on completion.
+     *
+     * Useful when you care only about the completion signal, not about the emitted items.
+     * If the source errors, the error is forwarded.
+     *
+     * @returns A `Mono<void>` that signals when this `Flux` completes.
+     */
     public then(): Mono<void> {
         return Mono.generate<void>(sink => {
             const sub = this.source.subscribe({
@@ -1364,6 +1953,15 @@ export class Flux<T> extends AbstractPipePublisher<T, Flux<T>> implements PipePu
         });
     }
 
+    /**
+     * Ignores all items from this `Flux`, then subscribes to `other` after this source completes,
+     * draining `other` completely and returning a `Mono<void>`.
+     *
+     * If this source or `other` errors, the error is forwarded.
+     *
+     * @param other - A `Publisher` to subscribe to after this source completes.
+     * @returns A `Mono<void>` that completes once `other` completes.
+     */
     public thenEmpty(other: Publisher<unknown>): Mono<void> {
         return this.then().flatMap(() => Mono.from<void>({
             subscribe(subscriber: Subscriber<void>): Subscription {

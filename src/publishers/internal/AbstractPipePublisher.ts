@@ -77,6 +77,15 @@ export abstract class AbstractPipePublisher<T, Self> implements Publisher<T> {
 
     // ──────────────────────── Error handling ────────────────────────────────
 
+    /**
+     * Falls back to `alternative` if this source completes without emitting any items.
+     *
+     * If the source emits at least one item, `alternative` is never subscribed to.
+     * If the source errors, the error is forwarded and `alternative` is not subscribed to.
+     *
+     * @param alternative - Publisher to subscribe to if the source is empty.
+     * @returns A publisher that uses `alternative` when the source is empty.
+     */
     public switchIfEmpty(alternative: Publisher<T>): Self {
         return this.wrapSource({
             subscribe: (subscriber: Subscriber<T>): Subscription => {
@@ -122,6 +131,16 @@ export abstract class AbstractPipePublisher<T, Self> implements Publisher<T> {
         });
     }
 
+    /**
+     * Substitutes the error signal with items from `replacement`.
+     *
+     * When the source signals `onError`, `replacement` is subscribed to and its items are
+     * forwarded downstream as if they came from the original source.
+     * If `replacement` itself errors, that error is forwarded.
+     *
+     * @param replacement - Publisher whose items replace the error.
+     * @returns A publisher that recovers from errors by switching to `replacement`.
+     */
     public onErrorReturn(replacement: Publisher<T>): Self {
         return this.wrapSource({
             subscribe: (subscriber: Subscriber<T>): Subscription => {
@@ -166,6 +185,13 @@ export abstract class AbstractPipePublisher<T, Self> implements Publisher<T> {
         });
     }
 
+    /**
+     * Handles errors selectively: if `predicate(error)` returns `true`, the error is
+     * swallowed and the stream completes normally; otherwise the error is forwarded.
+     *
+     * @param predicate - Receives the error and returns `true` to suppress it.
+     * @returns A publisher that converts matching errors into normal completions.
+     */
     public onErrorContinue(predicate: (error: Error) => boolean): Self {
         return this.wrapSource({
             subscribe: (subscriber: Subscriber<T>): Subscription => {
@@ -186,6 +212,14 @@ export abstract class AbstractPipePublisher<T, Self> implements Publisher<T> {
 
     // ──────────────────────── Side effects ──────────────────────────────────
 
+    /**
+     * Executes a side-effect `fn` on the **first** item emitted by the source.
+     *
+     * Subsequent items pass through unchanged. Any exception thrown by `fn` is silently swallowed.
+     *
+     * @param fn - Side-effect to run on the very first item.
+     * @returns A publisher with the side effect attached to the first item.
+     */
     public doFirst(fn: () => void): Self {
         return this.wrapSource({
             subscribe: (subscriber: Subscriber<T>): Subscription => {
@@ -205,6 +239,15 @@ export abstract class AbstractPipePublisher<T, Self> implements Publisher<T> {
         });
     }
 
+    /**
+     * Executes a side-effect `fn` for every item emitted by the source, before
+     * forwarding the item downstream.
+     *
+     * Any exception thrown by `fn` is silently swallowed; the item is still forwarded.
+     *
+     * @param fn - Side-effect called for each item.
+     * @returns A publisher with the side effect attached to each item.
+     */
     public doOnNext(fn: (value: T) => void): Self {
         return this.wrapSource({
             subscribe: (subscriber: Subscriber<T>): Subscription => {
@@ -220,6 +263,15 @@ export abstract class AbstractPipePublisher<T, Self> implements Publisher<T> {
         });
     }
 
+    /**
+     * Executes a side-effect `fn` when the source signals an error, before
+     * forwarding the error downstream.
+     *
+     * Any exception thrown by `fn` is silently swallowed; the original error is still forwarded.
+     *
+     * @param fn - Side-effect called with the error.
+     * @returns A publisher with the side effect attached to the error signal.
+     */
     public doOnError(fn: (error: Error) => void): Self {
         return this.wrapSource({
             subscribe: (subscriber: Subscriber<T>): Subscription => {
@@ -235,6 +287,15 @@ export abstract class AbstractPipePublisher<T, Self> implements Publisher<T> {
         });
     }
 
+    /**
+     * Executes a side-effect `fn` when the source calls `onSubscribe`, passing the
+     * resulting {@link Subscription} to the callback.
+     *
+     * Any exception thrown by `fn` is silently swallowed.
+     *
+     * @param fn - Side-effect called with the subscription object.
+     * @returns A publisher with the side effect attached to the subscribe event.
+     */
     public doOnSubscribe(fn: (subscription: Subscription) => void): Self {
         return this.wrapSource({
             subscribe: (subscriber: Subscriber<T>): Subscription => {
@@ -253,6 +314,16 @@ export abstract class AbstractPipePublisher<T, Self> implements Publisher<T> {
 
     // ──────────────────────── Scheduling ────────────────────────────────────
 
+    /**
+     * Shifts item delivery to the given `scheduler`.
+     *
+     * Each `onNext`, `onError`, and `onComplete` callback is scheduled on `scheduler`
+     * instead of being called inline. The source is still subscribed to on the
+     * calling thread; only the *delivery* of signals is redirected.
+     *
+     * @param scheduler - The scheduler on which downstream signals are delivered.
+     * @returns A publisher that delivers signals on the given scheduler.
+     */
     public publishOn(scheduler: Scheduler): Self {
         return this.wrapSource({
             subscribe: (subscriber: Subscriber<T>): Subscription => {
@@ -268,6 +339,19 @@ export abstract class AbstractPipePublisher<T, Self> implements Publisher<T> {
         });
     }
 
+    /**
+     * Shifts the *subscription* (and source execution) to the given `scheduler`.
+     *
+     * The actual call to `this.source.subscribe(...)` is deferred and run on `scheduler`.
+     * Downstream `onSubscribe` is delivered immediately on the calling thread with a proxy
+     * `Subscription` that buffers `request(n)` calls until the source subscription is ready.
+     *
+     * Use this for cold sources that do their work synchronously on subscribe — it moves
+     * that work to a different thread/context.
+     *
+     * @param scheduler - The scheduler on which the source is subscribed to and runs.
+     * @returns A publisher whose source execution runs on the given scheduler.
+     */
     public subscribeOn(scheduler: Scheduler): Self {
         return this.wrapSource({
             subscribe: (subscriber: Subscriber<T>): Subscription => {

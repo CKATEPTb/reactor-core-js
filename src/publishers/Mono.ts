@@ -6,6 +6,26 @@ import {Subscriber} from "@/subscriptions/Subscriber";
 import {Subscription} from "@/subscriptions/Subscription";
 import {AbstractPipePublisher} from "@/publishers/internal/AbstractPipePublisher";
 
+/**
+ * A cold publisher of 0 or 1 items with full backpressure support.
+ *
+ * A `Mono` emits at most one value followed by `onComplete`, or signals `onError`.
+ * Items flow only when the downstream {@link Subscription} issues `request(n)`.
+ * The convenience `subscribe(onNext, onError, onComplete)` overloads automatically
+ * request `1` so the value starts flowing without extra ceremony.
+ *
+ * Each `subscribe()` call creates an **independent** run of the pipeline ("cold" semantics).
+ *
+ * @typeParam T - The type of the single item emitted by this Mono.
+ *
+ * @example
+ * ```typescript
+ * Mono.just(42)
+ *   .map(n => n * 2)
+ *   .subscribe(v => console.log(v));
+ * // 84
+ * ```
+ */
 export class Mono<T> extends AbstractPipePublisher<T, Mono<T>> implements PipePublisher<T> {
 
     protected constructor(source: Publisher<T>) { super(source); }
@@ -19,11 +39,23 @@ export class Mono<T> extends AbstractPipePublisher<T, Mono<T>> implements PipePu
     // ─────────────────────────── Static factories ────────────────────────────
 
     /**
-     * Creates a Mono from a generator function receiving a Sink.
-     * Calling sink.next(value) emits the value (implicitly completing the Mono).
-     * Calling sink.error(err) terminates with error.
-     * Calling sink.complete() completes the Mono empty.
-     * Delivery is deferred until downstream requests.
+     * Creates a `Mono` from a generator function that pushes a value imperatively.
+     *
+     * The generator receives a {@link Sink} and should call exactly one of:
+     * - `sink.next(value)` — emits the value and completes.
+     * - `sink.error(err)` — terminates with an error.
+     * - `sink.complete()` — completes without emitting a value (empty `Mono`).
+     *
+     * Delivery is deferred until the downstream subscriber issues `request(n)`.
+     * Rule 1.3 is respected — `onSubscribe` is delivered before the generator runs.
+     *
+     * @param generator - Function that drives the `Mono` via the provided `Sink<T>`.
+     * @returns A cold `Mono<T>`.
+     *
+     * @example
+     * ```typescript
+     * Mono.generate<number>(sink => sink.next(42)).subscribe(v => console.log(v)); // 42
+     * ```
      */
     public static generate<T>(generator: (sink: Sink<T>) => void): Mono<T> {
         return new Mono<T>({
@@ -105,22 +137,47 @@ export class Mono<T> extends AbstractPipePublisher<T, Mono<T>> implements PipePu
         });
     }
 
-    /** Wraps an existing Publisher as a Mono. */
+    /**
+     * Wraps an existing {@link Publisher} as a `Mono`.
+     *
+     * @param publisher - Any `Publisher<T>` to adapt.
+     * @returns A `Mono<T>` backed by the given publisher.
+     */
     public static from<T>(publisher: Publisher<T>): Mono<T> {
         return new Mono<T>(publisher);
     }
 
-    /** Emits a single value then completes. */
+    /**
+     * Creates a `Mono` that emits `value` then completes.
+     *
+     * @param value - The single item to emit.
+     * @returns A cold `Mono<T>`.
+     *
+     * @example
+     * ```typescript
+     * Mono.just(42).subscribe(v => console.log(v)); // 42
+     * ```
+     */
     public static just<T>(value: T): Mono<T> {
         return Mono.generate(sink => sink.next(value));
     }
 
-    /** Emits the value if non-null/undefined, otherwise completes empty. */
+    /**
+     * Creates a `Mono` that emits `value` if it is non-null and non-undefined,
+     * or completes empty if `value` is `null` or `undefined`.
+     *
+     * @param value - The value to emit, or `null`/`undefined` for an empty Mono.
+     * @returns A `Mono<T>` that emits the value or completes immediately.
+     */
     public static justOrEmpty<T>(value: T | null | undefined): Mono<T> {
         return value != null ? Mono.just(value) : Mono.empty<T>();
     }
 
-    /** Completes immediately without emitting any value. */
+    /**
+     * Creates a `Mono` that completes immediately without emitting any value.
+     *
+     * @returns An empty, completed `Mono<T>`.
+     */
     public static empty<T = never>(): Mono<T> {
         return new Mono<T>({
             subscribe(subscriber: Subscriber<T>): Subscription {
@@ -132,7 +189,12 @@ export class Mono<T> extends AbstractPipePublisher<T, Mono<T>> implements PipePu
         });
     }
 
-    /** Terminates with an error immediately. */
+    /**
+     * Creates a `Mono` that signals `onError` immediately upon subscription.
+     *
+     * @param error - The error to signal (wrapped in an `Error` if not already one).
+     * @returns An errored `Mono<T>`.
+     */
     public static error<T = never>(error: unknown): Mono<T> {
         const err = error instanceof Error ? error : new Error(String(error));
         return new Mono<T>({
@@ -145,7 +207,20 @@ export class Mono<T> extends AbstractPipePublisher<T, Mono<T>> implements PipePu
         });
     }
 
-    /** Creates a Mono from a Promise. Emits the resolved value or errors on rejection. */
+    /**
+     * Creates a `Mono` that adapts a `Promise<T>`.
+     *
+     * The resolved value is emitted as the single item; a rejected promise signals `onError`.
+     *
+     * @param promise - The promise to adapt.
+     * @returns A `Mono<T>` backed by the promise.
+     *
+     * @example
+     * ```typescript
+     * Mono.fromPromise(fetch('/api/data').then(r => r.json()))
+     *   .subscribe(data => console.log(data));
+     * ```
+     */
     public static fromPromise<T>(promise: Promise<T>): Mono<T> {
         return Mono.generate(sink =>
             promise
@@ -154,7 +229,15 @@ export class Mono<T> extends AbstractPipePublisher<T, Mono<T>> implements PipePu
         );
     }
 
-    /** Lazily creates a Mono per subscription using the factory. */
+    /**
+     * Lazily creates a new `Mono` per subscription by calling `factory`.
+     *
+     * Useful when the source depends on mutable state that should be captured
+     * at subscribe time rather than at assembly time.
+     *
+     * @param factory - Called once per subscription to produce the actual `Mono<T>`.
+     * @returns A lazy `Mono<T>`.
+     */
     public static defer<T>(factory: () => Mono<T>): Mono<T> {
         return new Mono<T>({
             subscribe(subscriber: Subscriber<T>): Subscription {
@@ -165,6 +248,19 @@ export class Mono<T> extends AbstractPipePublisher<T, Mono<T>> implements PipePu
 
     // ─────────────────────── PipePublisher operators ─────────────────────────
 
+    /**
+     * Transforms the emitted value using `fn`, producing a `Mono<R>`.
+     *
+     * If `fn` throws, the exception is forwarded to `onError` and the stream terminates.
+     *
+     * @param fn - Mapping function applied to the emitted value.
+     * @returns A new `Mono<R>`.
+     *
+     * @example
+     * ```typescript
+     * Mono.just(42).map(n => n.toString()).subscribe(v => console.log(v)); // '42'
+     * ```
+     */
     public map<R>(fn: (value: T) => R): Mono<R> {
         return new Mono<R>({
             subscribe: (subscriber: Subscriber<R>): Subscription => {
@@ -183,6 +279,12 @@ export class Mono<T> extends AbstractPipePublisher<T, Mono<T>> implements PipePu
         });
     }
 
+    /**
+     * Transforms the emitted value with `fn`, completing empty if the result is `null` or `undefined`.
+     *
+     * @param fn - Mapping function; returning `null` or `undefined` produces an empty `Mono`.
+     * @returns A `Mono<NonNullable<R>>` that completes empty when the mapping returns null.
+     */
     public mapNotNull<R>(fn: (value: T) => R | null | undefined): Mono<NonNullable<R>> {
         return new Mono<NonNullable<R>>({
             subscribe: (subscriber: Subscriber<NonNullable<R>>): Subscription => {
@@ -209,6 +311,15 @@ export class Mono<T> extends AbstractPipePublisher<T, Mono<T>> implements PipePu
         });
     }
 
+    /**
+     * Maps the emitted value to an inner `Mono<R>` and flattens the result.
+     *
+     * When the source emits a value, `fn` is called and the resulting inner `Mono` is
+     * subscribed to. The inner `Mono`'s value (or completion/error) is forwarded downstream.
+     *
+     * @param fn - Maps the emitted value to a `Mono<R>` or any `Publisher<R>`.
+     * @returns A `Mono<R>` containing the result of the inner publisher.
+     */
     public flatMap<R>(fn: (value: T) => Mono<R>): Mono<R>;
     public flatMap<R>(fn: (value: T) => Publisher<R>): Mono<R>;
     public flatMap<R>(fn: (value: T) => Publisher<R>): Mono<R> {
@@ -269,7 +380,13 @@ export class Mono<T> extends AbstractPipePublisher<T, Mono<T>> implements PipePu
         });
     }
 
-    /** Passes the value if predicate returns true, otherwise completes empty. */
+    /**
+     * Passes the emitted value downstream only if `predicate` returns `true`;
+     * otherwise completes the `Mono` without emitting.
+     *
+     * @param predicate - Synchronous test applied to the emitted value.
+     * @returns A `Mono<T>` that completes empty when the predicate fails.
+     */
     public filter(predicate: (value: T) => boolean): Mono<T> {
         return new Mono<T>({
             subscribe: (subscriber: Subscriber<T>): Subscription => {
@@ -295,6 +412,13 @@ export class Mono<T> extends AbstractPipePublisher<T, Mono<T>> implements PipePu
         });
     }
 
+    /**
+     * Asynchronous filter: subscribes to `predicate(value)` and forwards the value
+     * downstream only if the predicate publisher emits `true`; otherwise completes empty.
+     *
+     * @param predicate - Returns a `Publisher<boolean>` for the emitted value.
+     * @returns A `Mono<T>` that completes empty when the predicate is not satisfied.
+     */
     public filterWhen(predicate: (value: T) => Publisher<boolean>): Mono<T> {
         return new Mono<T>({
             subscribe: (subscriber: Subscriber<T>): Subscription => {
@@ -354,11 +478,27 @@ export class Mono<T> extends AbstractPipePublisher<T, Mono<T>> implements PipePu
         });
     }
 
+    /**
+     * Unsafe type cast — changes the declared element type to `R` without any
+     * runtime conversion. Use only when you are certain the actual runtime type is compatible.
+     *
+     * @typeParam R - The target element type.
+     * @returns This `Mono` re-typed as `Mono<R>`.
+     */
     public cast<R>(): Mono<R> {
         return new Mono<R>(this.source as unknown as Publisher<R>);
     }
 
-    /** Runs fn on any terminal signal (onComplete or onError). */
+    /**
+     * Executes a side-effect function after the stream ends for **any** reason —
+     * normal completion or error. Unlike {@link Flux#doFinally}, this does not fire on
+     * cancellation (a `Mono` cancel is semantically identical to an unneeded result).
+     *
+     * Any exception thrown by `fn` is silently swallowed.
+     *
+     * @param fn - Side-effect to run after any terminal event.
+     * @returns A `Mono<T>` with the side effect attached.
+     */
     public doFinally(fn: () => void): Mono<T> {
         return new Mono<T>({
             subscribe: (subscriber: Subscriber<T>): Subscription => {
@@ -380,6 +520,18 @@ export class Mono<T> extends AbstractPipePublisher<T, Mono<T>> implements PipePu
         });
     }
 
+    /**
+     * Low-level escape hatch for bridging imperative push-based sources into a `Mono<R>`.
+     *
+     * The `producer` receives three callbacks and must call them to drive the stream.
+     * `onRequest` and `onUnsubscribe` let the caller respond to downstream demand and
+     * cancellation respectively.
+     *
+     * @param producer - Callback that receives `(onNext, onError, onComplete)` and drives the stream.
+     * @param onRequest - Called when the downstream subscriber requests `n` more items.
+     * @param onUnsubscribe - Called when the downstream subscriber cancels.
+     * @returns A `Mono<R>` backed by the imperative producer.
+     */
     public pipe<R>(
         producer: (onNext: (value: R) => void, onError: (error: Error) => void, onComplete: () => void) => void,
         onRequest: (request: number) => void,
@@ -401,7 +553,23 @@ export class Mono<T> extends AbstractPipePublisher<T, Mono<T>> implements PipePu
 
     // ─────────────────────── Mono-specific operators ─────────────────────────
 
-    /** Maps the value to a multi-value Publisher, returning a Flux. */
+    /**
+     * Maps the emitted value to a multi-item publisher and returns the items as a `Flux<R>`.
+     *
+     * The inner publisher is subscribed to once the source emits its single value.
+     * All items from the inner publisher are forwarded downstream. If the source is empty,
+     * the resulting `Flux` also completes empty.
+     *
+     * @param mapper - Maps the emitted value to a `Flux<R>`, `Mono<R>`, or any `Publisher<R>`.
+     * @returns A `Flux<R>` containing all items from the inner publisher.
+     *
+     * @example
+     * ```typescript
+     * Mono.just(3)
+     *   .flatMapMany(n => Flux.range(1, n))
+     *   .subscribe(v => console.log(v)); // 1  2  3
+     * ```
+     */
     public flatMapMany<R>(mapper: (value: T) => Flux<R>): Flux<R>;
     public flatMapMany<R>(mapper: (value: T) => Mono<R>): Flux<R>;
     public flatMapMany<R>(mapper: (value: T) => Publisher<R>): Flux<R>;
@@ -461,7 +629,21 @@ export class Mono<T> extends AbstractPipePublisher<T, Mono<T>> implements PipePu
         });
     }
 
-    /** Subscribes to both Monos concurrently and combines their single values into a tuple. */
+    /**
+     * Subscribes to this `Mono` and `other` concurrently and combines their values
+     * into a `[T, R]` tuple once both emit.
+     *
+     * If either `Mono` completes empty, the resulting `Mono` also completes empty.
+     * If either errors, the error is forwarded and the other is cancelled.
+     *
+     * @param other - The second `Mono` to zip with.
+     * @returns A `Mono<[T, R]>` emitting the combined tuple.
+     *
+     * @example
+     * ```typescript
+     * Mono.just(1).zipWith(Mono.just('a')).subscribe(([n, s]) => console.log(n, s)); // 1 a
+     * ```
+     */
     public zipWith<R>(other: Mono<R>): Mono<[T, R]> {
         return Mono.generate<[T, R]>(sink => {
             let left: T | undefined;
@@ -506,7 +688,22 @@ export class Mono<T> extends AbstractPipePublisher<T, Mono<T>> implements PipePu
         });
     }
 
-    /** Emits the source value then applies fn to derive a second Mono, combining both into a tuple. */
+    /**
+     * Emits the source value and uses `fn` to derive a second `Mono`, combining both into a tuple.
+     *
+     * The source value is passed to `fn` to produce the second `Mono`. Both values are then
+     * combined into a `[T, R]` tuple. If either `Mono` is empty or errors, those signals
+     * propagate to the subscriber.
+     *
+     * @param fn - Called with the emitted value to produce the second `Mono<R>`.
+     * @returns A `Mono<[T, R]>` emitting both values as a tuple.
+     *
+     * @example
+     * ```typescript
+     * Mono.just(42).zipWhen(n => Mono.just(n.toString())).subscribe(([n, s]) => console.log(n, s));
+     * // 42 '42'
+     * ```
+     */
     public zipWhen<R>(fn: (value: T) => Mono<R>): Mono<[T, R]> {
         return Mono.generate<[T, R]>(sink => {
             const outerSub = this.source.subscribe({
@@ -531,7 +728,11 @@ export class Mono<T> extends AbstractPipePublisher<T, Mono<T>> implements PipePu
         });
     }
 
-    /** Returns Mono<true> if this Mono emits a value, Mono<false> if it completes empty. */
+    /**
+     * Emits `true` if this `Mono` emits a value, `false` if it completes empty.
+     *
+     * @returns A `Mono<boolean>`.
+     */
     public hasElement(): Mono<boolean> {
         return Mono.generate<boolean>(sink => {
             const sub = this.source.subscribe({
@@ -544,7 +745,14 @@ export class Mono<T> extends AbstractPipePublisher<T, Mono<T>> implements PipePu
         });
     }
 
-    /** Subscribes and returns a Promise resolving to the emitted value, or null if empty. */
+    /**
+     * Subscribes to this `Mono` and returns a `Promise<T | null>`.
+     *
+     * The promise resolves with the emitted value, or with `null` if the `Mono` completes empty.
+     * The promise rejects if the `Mono` signals an error.
+     *
+     * @returns A `Promise<T | null>` that resolves when the `Mono` terminates.
+     */
     public toPromise(): Promise<T | null> {
         return new Promise<T | null>((resolve, reject) => {
             let value: T | null = null;
