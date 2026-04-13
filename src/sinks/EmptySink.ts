@@ -2,7 +2,7 @@ import {Sink} from "@/sinks/Sink";
 import {Publisher} from "@/publishers";
 import {Subscriber, Subscription} from "@/subscriptions";
 
-export default class OneSink<T> implements Sink<T>, Publisher<T> {
+export default class EmptySink<T> implements Sink<T>, Publisher<T> {
     complete(): void {
         // todo
     }
