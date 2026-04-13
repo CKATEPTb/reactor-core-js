@@ -70,6 +70,11 @@ describe('Flux — generic type inference', () => {
         f.subscribe((s: string) => s.length);
     });
 
+    it('Flux.range + flatMap(Mono inner) produces Flux<number>', () => {
+        const f: Flux<number> = Flux.range(1, 10).flatMap(value => Mono.just(value * 2));
+        f.subscribe((n: number) => n.toFixed());
+    });
+
     it('flatMap chain: Flux<number> → flatMap → Flux<string> → map → Flux<boolean>', () => {
         const f: Flux<boolean> = Flux.just(1, 2, 3)
             .flatMap(n => Flux.just(n.toString()))  // Flux<string>
