@@ -1,6 +1,6 @@
 {
   "name": "reactor-core-ts",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "description": "A TypeScript implementation of Reactive Streams, inspired by Project Reactor. Provides Flux and Mono publishers with full backpressure support, a suite of composable operators, programmable Sinks, and pluggable Schedulers.",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
