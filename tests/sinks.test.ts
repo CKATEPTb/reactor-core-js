@@ -23,6 +23,7 @@ class TestSubscriber<T> implements Subscriber<T> {
     completed = false;
     private sub: Subscription | null = null;
 
+    onSubscribe(sub: Subscription): void { this.sub = sub; }
     onNext(value: T): void { this.values.push(value); }
     onError(error: Error): void { this.errors.push(error); }
     onComplete(): void { this.completed = true; }
@@ -704,6 +705,7 @@ describe('Reactive Streams Spec — Rule 1.1: onNext count ≤ requested', () =>
         let received: number[] = [];
         let completed = false;
         const sub = sink.subscribe({
+            onSubscribe(_s) {},
             onNext(v) { received.push(v); },
             onError() {},
             onComplete() { completed = true; }
@@ -755,7 +757,7 @@ describe('Reactive Streams Spec — Rule 3.9: request(n ≤ 0) signals onError',
     test.each(sinksUnderTest)('%s: request(0) signals onError', (_name, factory) => {
         const sink = factory();
         const errors: Error[] = [];
-        const sub = sink.subscribe({ onNext() {}, onError(e) { errors.push(e); }, onComplete() {} });
+        const sub = sink.subscribe({ onSubscribe(_s) {}, onNext() {}, onError(e: any) { errors.push(e); }, onComplete() {} });
         sub.request(0);
         expect(errors).toHaveLength(1);
         expect(errors[0].message).toMatch(/must be > 0/);
@@ -764,7 +766,7 @@ describe('Reactive Streams Spec — Rule 3.9: request(n ≤ 0) signals onError',
     test.each(sinksUnderTest)('%s: request(-1) signals onError', (_name, factory) => {
         const sink = factory();
         const errors: Error[] = [];
-        const sub = sink.subscribe({ onNext() {}, onError(e) { errors.push(e); }, onComplete() {} });
+        const sub = sink.subscribe({ onSubscribe(_s) {}, onNext() {}, onError(e: any) { errors.push(e); }, onComplete() {} });
         sub.request(-1);
         expect(errors).toHaveLength(1);
         expect(errors[0].message).toMatch(/must be > 0/);
@@ -774,6 +776,7 @@ describe('Reactive Streams Spec — Rule 3.9: request(n ≤ 0) signals onError',
         const sink = factory();
         const events: string[] = [];
         const sub = sink.subscribe({
+            onSubscribe(_s) {},
             onNext() { events.push('next'); },
             onError() { events.push('error'); },
             onComplete() { events.push('complete'); }
@@ -836,6 +839,7 @@ describe('Reactive Streams Spec — Rule 3.16: no unbounded recursion (request i
         let completed = false;
         let sub: Subscription;
         sub = sink.subscribe({
+            onSubscribe(_s) {},
             onNext(v) {
                 received.push(v);
                 sub.request(1); // re-entrant request from within onNext
@@ -857,6 +861,7 @@ describe('Reactive Streams Spec — Rule 3.16: no unbounded recursion (request i
         const received: number[] = [];
         let sub: Subscription;
         sub = sink.subscribe({
+            onSubscribe(_s) {},
             onNext(v) {
                 received.push(v);
                 sub.request(1);
@@ -877,6 +882,7 @@ describe('Reactive Streams Spec — Rule 3.16: no unbounded recursion (request i
         const received: number[] = [];
         let sub: Subscription;
         sub = sink.subscribe({
+            onSubscribe(_s) {},
             onNext(v) { received.push(v); sub.request(1); },
             onError() {},
             onComplete() {}
@@ -894,6 +900,7 @@ describe('Reactive Streams Spec — Rule 3.16: no unbounded recursion (request i
         const received: number[] = [];
         let sub: Subscription;
         sub = sink.subscribe({
+            onSubscribe(_s) {},
             onNext(v) { received.push(v); sub.request(1); },
             onError() {},
             onComplete() {}

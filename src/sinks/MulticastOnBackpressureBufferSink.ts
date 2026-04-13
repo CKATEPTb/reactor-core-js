@@ -73,14 +73,16 @@ export default class MulticastOnBackpressureBufferSink<T> implements Sink<T>, Pu
 
     subscribe(subscriber: Subscriber<T>): Subscription {
         if (this.terminated) {
+            const sub = { request() {}, unsubscribe() {} };
+            subscriber.onSubscribe(sub);
             this.terminalError
                 ? subscriber.onError(this.terminalError)
                 : subscriber.onComplete();
-            return { request() {}, unsubscribe() {} };
+            return sub;
         }
         const entry: Entry<T> = { buffer: [], demand: 0, cancelled: false, draining: false };
         this.entries.set(subscriber, entry);
-        return {
+        const sub = {
             request: (n: number) => {
                 if (entry.cancelled) return;
                 // Rule 3.9: request(n ≤ 0) MUST signal onError
@@ -99,5 +101,7 @@ export default class MulticastOnBackpressureBufferSink<T> implements Sink<T>, Pu
                 if (this.autoCancel && this.entries.size === 0) this.terminated = true;
             }
         };
+        subscriber.onSubscribe(sub);
+        return sub;
     }
 }

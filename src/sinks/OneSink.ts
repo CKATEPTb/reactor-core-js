@@ -51,8 +51,10 @@ export default class OneSink<T> implements Sink<T>, Publisher<T> {
 
     subscribe(subscriber: Subscriber<T>): Subscription {
         if (this.terminalError) {
+            const sub = { request() {}, unsubscribe() {} };
+            subscriber.onSubscribe(sub);
             subscriber.onError(this.terminalError);
-            return { request() {}, unsubscribe() {} };
+            return sub;
         }
 
         const entry: Entry = { demand: 0, cancelled: false, completionQueued: this.completed };
@@ -61,11 +63,13 @@ export default class OneSink<T> implements Sink<T>, Publisher<T> {
         // Already completed with no value — signal immediately
         if (this.completed && this.pendingValue === null) {
             this.entries.delete(subscriber);
+            const sub = { request() {}, unsubscribe() {} };
+            subscriber.onSubscribe(sub);
             subscriber.onComplete();
-            return { request() {}, unsubscribe() {} };
+            return sub;
         }
 
-        return {
+        const sub = {
             request: (n: number) => {
                 if (entry.cancelled) return;
                 // Rule 3.9: request(n ≤ 0) MUST signal onError
@@ -90,5 +94,7 @@ export default class OneSink<T> implements Sink<T>, Publisher<T> {
                 this.entries.delete(subscriber);
             }
         };
+        subscriber.onSubscribe(sub);
+        return sub;
     }
 }

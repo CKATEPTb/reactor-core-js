@@ -72,8 +72,10 @@ export default class ReplayLatestOrDefaultSink<T> implements Sink<T>, Publisher<
 
     subscribe(subscriber: Subscriber<T>): Subscription {
         if (this.terminated && this.terminalError) {
+            const sub = { request() {}, unsubscribe() {} };
+            subscriber.onSubscribe(sub);
             subscriber.onError(this.terminalError);
-            return { request() {}, unsubscribe() {} };
+            return sub;
         }
         // New subscriber always starts with latestValue (or default) as pending
         const entry: Entry<T> = {
@@ -84,7 +86,7 @@ export default class ReplayLatestOrDefaultSink<T> implements Sink<T>, Publisher<
             draining: false
         };
         this.entries.set(subscriber, entry);
-        return {
+        const sub = {
             request: (n: number) => {
                 if (entry.cancelled) return;
                 // Rule 3.9: request(n ≤ 0) MUST signal onError
@@ -102,5 +104,7 @@ export default class ReplayLatestOrDefaultSink<T> implements Sink<T>, Publisher<
                 this.entries.delete(subscriber);
             }
         };
+        subscriber.onSubscribe(sub);
+        return sub;
     }
 }

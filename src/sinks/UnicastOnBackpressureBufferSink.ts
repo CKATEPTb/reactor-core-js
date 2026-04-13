@@ -52,12 +52,13 @@ export default class UnicastOnBackpressureBufferSink<T> implements Sink<T>, Publ
 
     subscribe(subscriber: Subscriber<T>): Subscription {
         if (this.subscriber !== null) {
+            const noop = { request() {}, unsubscribe() {} };
+            subscriber.onSubscribe(noop);
             subscriber.onError(new Error('UnicastOnBackpressureBufferSink allows only one subscriber'));
-            return { request() {}, unsubscribe() {} };
+            return noop;
         }
         this.subscriber = subscriber;
-        this.drain();
-        return {
+        const sub = {
             request: (n: number) => {
                 if (this.cancelled) return;
                 // Rule 3.9: request(n ≤ 0) MUST signal onError
@@ -78,5 +79,8 @@ export default class UnicastOnBackpressureBufferSink<T> implements Sink<T>, Publ
                 this.buffer.length = 0;
             }
         };
+        subscriber.onSubscribe(sub);
+        this.drain();
+        return sub;
     }
 }

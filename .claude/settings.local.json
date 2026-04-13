@@ -3,7 +3,8 @@
     "allow": [
       "mcp__idea__list_directory_tree",
       "Bash(npx tsc:*)",
-      "Bash(npx jest:*)"
+      "Bash(npx jest:*)",
+      "Bash(echo \"EXIT:$?\")"
     ]
   }
 }

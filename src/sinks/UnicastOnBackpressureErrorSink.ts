@@ -38,17 +38,21 @@ export default class UnicastOnBackpressureErrorSink<T> implements Sink<T>, Publi
 
     subscribe(subscriber: Subscriber<T>): Subscription {
         if (this.subscriber !== null) {
+            const noop = { request() {}, unsubscribe() {} };
+            subscriber.onSubscribe(noop);
             subscriber.onError(new Error('UnicastOnBackpressureErrorSink allows only one subscriber'));
-            return { request() {}, unsubscribe() {} };
+            return noop;
         }
         if (this.terminated) {
+            const sub = { request() {}, unsubscribe() {} };
+            subscriber.onSubscribe(sub);
             this.terminalError
                 ? subscriber.onError(this.terminalError)
                 : subscriber.onComplete();
-            return { request() {}, unsubscribe() {} };
+            return sub;
         }
         this.subscriber = subscriber;
-        return {
+        const sub = {
             request: (n: number) => {
                 if (this.cancelled) return;
                 // Rule 3.9: request(n ≤ 0) MUST signal onError
@@ -66,5 +70,7 @@ export default class UnicastOnBackpressureErrorSink<T> implements Sink<T>, Publi
                 this.subscriber = null;
             }
         };
+        subscriber.onSubscribe(sub);
+        return sub;
     }
 }

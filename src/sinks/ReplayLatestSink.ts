@@ -73,14 +73,16 @@ export default class ReplayLatestSink<T> implements Sink<T>, Publisher<T> {
 
     subscribe(subscriber: Subscriber<T>): Subscription {
         if (this.terminated && this.history.length === 0) {
+            const sub = { request() {}, unsubscribe() {} };
+            subscriber.onSubscribe(sub);
             this.terminalError
                 ? subscriber.onError(this.terminalError)
                 : subscriber.onComplete();
-            return { request() {}, unsubscribe() {} };
+            return sub;
         }
         const entry: Entry<T> = { replay: [...this.history], demand: 0, cancelled: false, draining: false };
         this.entries.set(subscriber, entry);
-        return {
+        const sub = {
             request: (n: number) => {
                 if (entry.cancelled) return;
                 // Rule 3.9: request(n ≤ 0) MUST signal onError
@@ -98,5 +100,7 @@ export default class ReplayLatestSink<T> implements Sink<T>, Publisher<T> {
                 this.entries.delete(subscriber);
             }
         };
+        subscriber.onSubscribe(sub);
+        return sub;
     }
 }

@@ -13,7 +13,7 @@
     }
   },
   "scripts": {
-    "build": "pnpm run test && tsup src/index.ts",
+    "build": "npm run test && tsup src/index.ts",
     "start": "tsx src/start.ts",
     "start:watch": "tsx watch src/start.ts",
     "test": "jest --config jest.config.ts",

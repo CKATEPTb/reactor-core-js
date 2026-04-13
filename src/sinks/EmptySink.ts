@@ -26,13 +26,15 @@ export default class EmptySink<T> implements Sink<T>, Publisher<T> {
 
     subscribe(subscriber: Subscriber<T>): Subscription {
         if (this.terminal) {
+            const sub = { request() {}, unsubscribe() {} };
+            subscriber.onSubscribe(sub);
             this.terminal.kind === 'completed'
                 ? subscriber.onComplete()
                 : subscriber.onError(this.terminal.error);
-            return { request() {}, unsubscribe() {} };
+            return sub;
         }
         this.subscribers.add(subscriber);
-        return {
+        const sub = {
             // Rule 3.9: request(n ≤ 0) MUST signal onError
             request: (n: number) => {
                 if (!this.subscribers.has(subscriber)) return;
@@ -43,5 +45,7 @@ export default class EmptySink<T> implements Sink<T>, Publisher<T> {
             },
             unsubscribe: () => { this.subscribers.delete(subscriber); }
         };
+        subscriber.onSubscribe(sub);
+        return sub;
     }
 }
