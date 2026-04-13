@@ -12,7 +12,9 @@ A TypeScript implementation of [Reactive Streams](https://www.reactive-streams.o
   - [Filtering](#flux-filtering)
   - [Aggregation](#flux-aggregation)
   - [Combining](#flux-combining)
+  - [Backpressure](#flux-backpressure)
   - [Side effects](#flux-side-effects)
+  - [Error handling](#flux-error-handling)
   - [Scheduling](#flux-scheduling)
   - [Utilities](#flux-utilities)
   - [Subscribe](#flux-subscribe)
@@ -22,6 +24,7 @@ A TypeScript implementation of [Reactive Streams](https://www.reactive-streams.o
   - [Filtering](#mono-filtering)
   - [Combining](#mono-combining)
   - [Side effects](#mono-side-effects)
+  - [Error handling](#mono-error-handling)
   - [Scheduling](#mono-scheduling)
   - [Utilities](#mono-utilities)
   - [Subscribe](#mono-subscribe)
@@ -77,11 +80,18 @@ This library implements [Reactive Streams specification](https://www.reactive-st
 | `Flux.range(start, count)` | Emit integers `[start, start+count)`. |
 | `Flux.fromIterable(iterable)` | Emit all items from any `Iterable<T>`. |
 | `Flux.generate(sink => …)` | Imperative generator. Call `sink.next()` / `sink.complete()` / `sink.error()`. Delivery is deferred until downstream requests. |
+| `Flux.create(emitter => …)` | Push-based bridge via [`FluxSink`](#fluxsink) — supports `onRequest`, `onCancel`, `onDispose` callbacks. Suitable for event listeners and callback APIs. |
 | `Flux.from(publisher)` | Wrap any `Publisher<T>` as a `Flux<T>`. |
 | `Flux.defer(factory)` | Lazily create a new Flux per subscription via the factory function. |
 | `Flux.empty()` | Complete immediately without emitting. |
 | `Flux.never()` | Never emit any signal. |
 | `Flux.error(err)` | Signal `onError` immediately. |
+| `Flux.interval(ms)` | Emit an incrementing counter (0, 1, 2, …) at a fixed `ms` rate. Items are dropped when downstream has no demand. |
+| `Flux.merge(...sources)` | Subscribe to all sources concurrently; items interleave as they arrive. |
+| `Flux.zip(sources, combiner)` | Combine items from 2–4 sources positionally via `combiner`. Overloads for 2, 3, and 4 typed sources. |
+| `Flux.combineLatest(sources, combiner)` | Emit a new value whenever any source emits, combining the **latest** values from each. Overloads for 2, 3, and 4 sources. |
+| `Flux.firstWithValue(...sources)` | Race: emit the first value to arrive from any source, then cancel the rest. |
+| `Flux.using(resourceSupplier, sourceFactory, cleanup)` | Manage a resource lifecycle: acquire, stream, release on termination. |
 
 ```typescript
 import { Flux } from 'reactor-core-ts';
@@ -117,6 +127,17 @@ Flux.generate<number>(sink => {
 | `.scanWith(seedFactory, reducer)` | Emit running accumulation starting from an explicit seed value. |
 | `.cast<R>()` | Unsafe type cast — changes the declared element type without any runtime conversion. |
 | `.indexed()` | Pair each item with its zero-based index: `Flux<[number, T]>`. |
+| `.groupBy(keyFn)` | Route items into `GroupedFlux<K, T>` streams keyed by `keyFn(item)`. Each group is a self-contained `Flux`. |
+| `.expand(fn)` | Breadth-first recursive expansion — each item is expanded via `fn`, which returns a `Publisher<T>` of child items. |
+| `.sample(trigger)` | Emit the latest item seen whenever `trigger` emits. |
+| `.bufferTimeout(maxSize, ms)` | Collect items into arrays; flush when the buffer reaches `maxSize` or `ms` elapses. |
+| `.elapsed()` | Pair each item with the milliseconds elapsed since the previous item: `Flux<[number, T]>`. |
+| `.timestamp()` | Pair each item with the current timestamp in ms: `Flux<[number, T]>`. |
+| `.materialize()` | Wrap each signal (`next`, `error`, `complete`) as a `Signal<T>` item. |
+| `.dematerialize()` | Restore a `Flux<Signal<R>>` back into a live reactive stream. |
+| `.transformDeferred(fn)` | Apply a reusable operator function lazily per subscription. |
+| `.delayUntil(triggerFn)` | Hold each item until the trigger publisher returned by `triggerFn(item)` emits or completes. |
+| `.ofType(constructor)` | Keep only items that are `instanceof` the given constructor, with a typed cast to `R`. |
 
 ```typescript
 Flux.just(1, 2, 3)
@@ -220,6 +241,10 @@ Flux.just(3, 1, 4, 1, 5)
 | `.concatWith(other)` | Append `other` after `this` completes (sequential). |
 | `.mergeWith(other)` | Merge `other` with `this` concurrently; items interleave as they arrive. |
 | `.zipWith(other, combiner)` | Pair items from `this` and `other` one-by-one using `combiner(a, b) → V`. |
+| `Flux.merge(...sources)` | Static N-source merge — subscribe to all and forward items as they arrive. |
+| `Flux.zip(sources, combiner)` | Static positional combine: waits for one item from each source, then calls `combiner`. |
+| `Flux.combineLatest(sources, combiner)` | Emit a combined value whenever any source emits; uses the latest from all others. |
+| `Flux.firstWithValue(...sources)` | Race: emits the first value from any source, cancelling all others. |
 
 ```typescript
 Flux.just(1, 2).concatWith(Flux.just(3, 4)).subscribe(v => console.log(v));
@@ -228,7 +253,24 @@ Flux.just(1, 2).concatWith(Flux.just(3, 4)).subscribe(v => console.log(v));
 Flux.just(1, 2, 3).zipWith(Flux.just('a', 'b', 'c'), (n, s) => `${n}${s}`)
     .subscribe(v => console.log(v));
 // '1a'  '2b'  '3c'
+
+Flux.zip([Flux.just(1, 2), Flux.just('a', 'b')], (n, s) => `${n}${s}`)
+    .subscribe(v => console.log(v));
+// '1a'  '2b'
+
+Flux.combineLatest([Flux.just(1), Flux.just(2)], (a, b) => a + b)
+    .subscribe(v => console.log(v));
+// 3
 ```
+
+### Flux Backpressure
+
+| Method | Description |
+|---|---|
+| `.onBackpressureBuffer(maxSize?)` | Buffer all items when downstream has no demand. Signals error when `maxSize` is exceeded. |
+| `.onBackpressureDrop(onDrop?)` | Silently drop items when downstream has no demand. Optional `onDrop(item)` callback. |
+| `.onBackpressureLatest()` | Keep only the latest item when downstream has no demand; older items are discarded. |
+| `.limitRate(n)` | Prefetch items from upstream in batches of `n`, replenishing at 75% consumption. |
 
 ### Flux Side Effects
 
@@ -244,6 +286,22 @@ These operators observe signals without modifying the stream.
 | `.doOnCancel(fn)` | Run `fn` when the subscription is cancelled. |
 | `.doFinally(fn)` | Run `fn` after the stream terminates for any reason (complete, error, or cancel). |
 | `.doOnSubscribe(fn)` | Run `fn` when `onSubscribe` is received, receiving the `Subscription` object. |
+| `.doOnRequest(fn)` | Run `fn(n)` each time downstream calls `request(n)`. |
+| `.doOnEach(fn)` | Run `fn(signal)` for every signal — next, error, and complete — as a `Signal<T>`. |
+| `.log(label?)` | Console-log every signal with an optional label prefix. |
+
+### Flux Error Handling
+
+| Method | Description |
+|---|---|
+| `.retry(maxRetries?)` | Re-subscribe on error up to `maxRetries` times (default: unbounded). |
+| `.retryWhen(fn)` | Controlled retry — each error is pushed to a `Flux<Error>` returned by `fn`; re-subscribe when the control emits. |
+| `.repeatWhen(fn)` | Controlled repeat — each completion is pushed to a `Flux<void>`; re-subscribe when the control emits. |
+| `.onErrorReturn(replacement)` | On error, switch to `replacement` publisher. |
+| `.onErrorResume(fn)` | On error, switch to the publisher returned by `fn(error)`. |
+| `.onErrorMap(fn)` | Transform the error without changing the stream type. |
+| `.onErrorContinue(predicate)` | If `predicate(err)` is `true`, complete; otherwise re-throw. |
+| `.timeout(ms, fallback?)` | Error with `TimeoutError` if no item arrives within `ms`; optionally switch to `fallback`. |
 
 ```typescript
 Flux.just(1, 2, 3)
@@ -277,12 +335,33 @@ Flux.just('a', 'b', 'c')
 
 | Method | Description |
 |---|---|
-| `.retry(maxRetries?)` | Re-subscribe on error up to `maxRetries` times (default: unbounded). |
 | `.cache()` | Subscribe to the source once; replay all items to subsequent subscribers. |
 | `.switchIfEmpty(alternative)` | Switch to `alternative` if source completes without emitting. |
-| `.onErrorReturn(replacement)` | On error, switch to `replacement` publisher. |
-| `.onErrorContinue(predicate)` | If `predicate(err)` is `true`, complete; otherwise re-throw. |
+| `.delaySubscription(ms)` | Delay the actual subscription to the source by `ms` milliseconds. |
 | `.pipe(producer, onRequest, onUnsubscribe)` | Low-level escape hatch for building custom downstream operators. |
+
+### FluxSink
+
+`Flux.create(emitter => …)` hands the `emitter` callback a `FluxSink<T>` with:
+
+| Member | Description |
+|---|---|
+| `.next(value)` | Push a value. Buffered when downstream has no demand. |
+| `.error(err)` | Terminate with an error. |
+| `.complete()` | Complete normally. |
+| `.requested` | Current downstream demand count. |
+| `.onRequest(fn)` | Register a callback invoked each time downstream requests more items. |
+| `.onCancel(fn)` | Register a cancellation callback. |
+| `.onDispose(fn)` | Register a callback invoked on any terminal event (cancel, error, complete). |
+
+```typescript
+Flux.create<number>(sink => {
+    const id = setInterval(() => {
+        if (sink.requested > 0) sink.next(Math.random());
+    }, 100);
+    sink.onDispose(() => clearInterval(id));
+}).take(5).subscribe(v => console.log(v));
+```
 
 ### Flux Subscribe
 
@@ -326,10 +405,14 @@ sub.unsubscribe(); // cancel at any time
 | `Mono.justOrEmpty(value)` | Emit `value` if not `null`/`undefined`, otherwise complete empty. |
 | `Mono.fromPromise(promise)` | Wrap a `Promise<T>` — resolves to `onNext` + `onComplete`, rejects to `onError`. |
 | `Mono.generate(sink => …)` | Imperative generator. Call `sink.next()` exactly once (or `sink.error()`/`sink.complete()`). |
+| `Mono.create(sink => …)` | Alias for `Mono.generate`. |
+| `Mono.fromCallable(fn)` | Lazy synchronous factory — calls `fn()` at subscribe time; propagates throws as `onError`. |
+| `Mono.delay(ms)` | Emit `0` after `ms` milliseconds. |
 | `Mono.from(publisher)` | Wrap any `Publisher<T>` as a `Mono<T>` (takes only the first item). |
 | `Mono.defer(factory)` | Lazily create a new Mono per subscription via the factory function. |
 | `Mono.empty()` | Complete immediately without emitting. |
 | `Mono.error(err)` | Signal `onError` immediately. |
+| `Mono.firstWithValue(...sources)` | Race: emit the first value from any of the given `Mono` sources. |
 
 ```typescript
 import { Mono } from 'reactor-core-ts';
@@ -356,6 +439,9 @@ Mono.justOrEmpty(null).subscribe(
 | `.mapNotNull(fn)` | Transform `T → R | null | undefined`; if result is null/undefined, complete empty. |
 | `.flatMap(fn)` | Map the value to a `Mono<R>`, then subscribe to that inner Mono. |
 | `.flatMapMany(fn)` | Map the value to a `Flux<R>` or `Mono<R>`, returning a `Flux<R>`. |
+| `.thenReturn(value)` | Ignore the emitted value; emit `value` after source completes. |
+| `.delayElement(ms)` | Delay the emitted value by `ms` milliseconds. |
+| `.delayUntil(triggerFn)` | Hold the emitted value until the trigger publisher fires, then forward it. |
 | `.cast<R>()` | Unsafe type cast. |
 
 ```typescript
@@ -396,7 +482,29 @@ Mono.just(42)
 
 ### Mono Side Effects
 
-Same as Flux: `.doOnNext`, `.doOnError`, `.doOnSubscribe`, `.doFirst`, `.doFinally`.
+| Method | Description |
+|---|---|
+| `.doOnSuccess(fn)` | Run `fn(value)` when the Mono emits a value. Exceptions propagate as `onError`. |
+| `.doFirst(fn)` | Run `fn` before the first item is emitted. |
+| `.doOnNext(fn)` | Run `fn` for the emitted item. |
+| `.doOnError(fn)` | Run `fn` when `onError` is received. |
+| `.doOnSubscribe(fn)` | Run `fn` when `onSubscribe` is received. |
+| `.doFinally(fn)` | Run `fn` after the stream terminates (complete or error). |
+| `.doOnRequest(fn)` | Run `fn(n)` when downstream calls `request(n)`. |
+| `.doOnEach(fn)` | Run `fn(signal)` for every signal as a `Signal<T>`. |
+| `.log(label?)` | Console-log every signal. |
+
+### Mono Error Handling
+
+| Method | Description |
+|---|---|
+| `.retry(maxRetries?)` | Re-subscribe on error up to `maxRetries` times. |
+| `.retryWhen(fn)` | Controlled retry — each error is pushed to a `Flux<Error>`; re-subscribe when the control emits. |
+| `.onErrorReturn(replacement)` | On error, switch to `replacement` publisher. |
+| `.onErrorResume(fn)` | On error, switch to the publisher returned by `fn(error)`. |
+| `.onErrorMap(fn)` | Transform the error. |
+| `.onErrorComplete(predicate?)` | Convert an error to a normal completion (optionally filtered by `predicate`). |
+| `.timeout(ms, fallback?)` | Error with `TimeoutError` if no item arrives within `ms`. |
 
 ### Mono Scheduling
 
@@ -408,9 +516,9 @@ Same as Flux: `.publishOn(scheduler)`, `.subscribeOn(scheduler)`.
 |---|---|
 | `.hasElement()` | `Mono<boolean>` — `true` if a value is emitted, `false` if it completes empty. |
 | `.toPromise()` | `Promise<T | null>` — resolves with the emitted value or `null` if empty. |
+| `.toFuture()` | Alias for `.toPromise()`. |
+| `.or(other)` | Fall back to `other` Mono if this completes empty. |
 | `.switchIfEmpty(alternative)` | Switch to `alternative` Mono if this completes empty. |
-| `.onErrorReturn(replacement)` | On error, switch to `replacement` publisher. |
-| `.retry(maxRetries?)` | Re-subscribe on error. |
 | `.pipe(producer, onRequest, onUnsubscribe)` | Low-level custom operator builder. |
 
 ### Mono Subscribe
@@ -598,10 +706,10 @@ The convenience callback overloads issue `request(Number.MAX_SAFE_INTEGER)` for 
 ```bash
 git clone https://github.com/CKATEPTb/reactor-core-ts.git
 cd reactor-core-ts
-pnpm install
+npm install
 
-pnpm run build   # compile
-pnpm test        # run all tests (Jest + TCK)
+npm run build   # compile
+npm run test    # run all tests (Jest + TCK)
 ```
 
 Feel free to open issues and submit pull requests.
@@ -612,4 +720,4 @@ Feel free to open issues and submit pull requests.
 
 LGPL-3.0-only. See [LICENSE.md](LICENSE.md) for details.
 
-**Author**: CKATEPTb
+**Author**: [CKATEPTb](https://github.com/CKATEPTb)
