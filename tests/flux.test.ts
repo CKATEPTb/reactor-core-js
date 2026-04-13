@@ -1463,3 +1463,200 @@ describe('Flux Reactive Streams compliance', () => {
         expect(completed).toBe(false);
     });
 });
+
+// ─────────────────────────── subscribe() convenience overloads ────────────────
+
+describe('Flux subscribe convenience overloads', () => {
+    test('subscribe() with no args — consumes items silently without throwing', () => {
+        expect(() => Flux.range(0, 5).subscribe()).not.toThrow();
+    });
+
+    test('subscribe() on empty Flux — completes silently', () => {
+        expect(() => Flux.empty<number>().subscribe()).not.toThrow();
+    });
+
+    test('subscribe(onNext) — receives all items, auto-requests unbounded', () => {
+        const received: number[] = [];
+        Flux.range(0, 5).subscribe(v => received.push(v));
+        expect(received).toEqual([0, 1, 2, 3, 4]);
+    });
+
+    test('subscribe(onNext) — Flux.just delivers all values', () => {
+        const received: number[] = [];
+        Flux.just(10, 20, 30).subscribe(v => received.push(v));
+        expect(received).toEqual([10, 20, 30]);
+    });
+
+    test('subscribe(onNext, onError) — onError fires on failure', () => {
+        const errors: Error[] = [];
+        Flux.error<number>(new Error('fail')).subscribe(
+            () => {},
+            e => errors.push(e),
+        );
+        expect(errors).toHaveLength(1);
+        expect(errors[0].message).toBe('fail');
+    });
+
+    test('subscribe(onNext, onError, onComplete) — all three callbacks fire', () => {
+        const events: string[] = [];
+        Flux.just(1, 2).subscribe(
+            v => events.push(`next:${v}`),
+            _e => events.push('error'),
+            () => events.push('complete'),
+        );
+        expect(events).toEqual(['next:1', 'next:2', 'complete']);
+    });
+
+    test('subscribe(onNext, onError, onComplete) — empty Flux fires only onComplete', () => {
+        const events: string[] = [];
+        Flux.empty<number>().subscribe(
+            () => events.push('next'),
+            () => events.push('error'),
+            () => events.push('complete'),
+        );
+        expect(events).toEqual(['complete']);
+    });
+
+    test('subscribe(onNext, onError, onComplete) — error Flux fires only onError', () => {
+        const events: string[] = [];
+        Flux.error<number>(new Error()).subscribe(
+            () => events.push('next'),
+            _e => events.push('error'),
+            () => events.push('complete'),
+        );
+        expect(events).toEqual(['error']);
+    });
+
+    test('subscribe(onNext) with no onError — unhandled error is re-thrown', () => {
+        expect(() =>
+            Flux.error<number>(new Error('unhandled')).subscribe(() => {}),
+        ).toThrow('unhandled');
+    });
+
+    test('full Subscriber object — caller controls demand manually', () => {
+        const received: number[] = [];
+        const sub = Flux.range(0, 10).subscribe({
+            onSubscribe(_s) { /* no auto-request */ },
+            onNext(v) { received.push(v); },
+            onError() {},
+            onComplete() {},
+        });
+        expect(received).toHaveLength(0);
+        sub.request(3);
+        expect(received).toEqual([0, 1, 2]);
+        sub.request(2);
+        expect(received).toEqual([0, 1, 2, 3, 4]);
+    });
+});
+
+// ─────────────────────────── flatMap with schedulers ─────────────────────────
+
+describe('Flux.flatMap with schedulers', () => {
+    const asyncScheduler = { schedule: (fn: () => void) => setTimeout(fn, 0) };
+
+    test('flatMap: each inner Mono.publishOn delivers asynchronously, all items arrive', async () => {
+        const received: number[] = [];
+        await new Promise<void>(resolve => {
+            Flux.just(1, 2, 3)
+                .flatMap(v => Mono.just(v * 10).publishOn(asyncScheduler))
+                .subscribe(
+                    v => received.push(v),
+                    _e => {},
+                    resolve,
+                );
+        });
+        // flatMap is unordered — sort for stable assertion
+        expect(received.sort((a, b) => a - b)).toEqual([10, 20, 30]);
+    });
+
+    test('publishOn before flatMap: outer items arrive async, inner runs sync', async () => {
+        const received: number[] = [];
+        await new Promise<void>(resolve => {
+            Flux.just(1, 2, 3)
+                .publishOn(asyncScheduler)
+                .flatMap(v => Mono.just(v * 2))
+                .subscribe(
+                    v => received.push(v),
+                    _e => {},
+                    resolve,
+                );
+        });
+        expect(received).toEqual([2, 4, 6]);
+    });
+
+    test('subscribeOn: subscription deferred, items delivered once scheduled', async () => {
+        const received: number[] = [];
+        await new Promise<void>(resolve => {
+            Flux.range(0, 4)
+                .subscribeOn(asyncScheduler)
+                .subscribe(
+                    v => received.push(v),
+                    _e => {},
+                    resolve,
+                );
+        });
+        expect(received).toEqual([0, 1, 2, 3]);
+    });
+
+    test('subscribeOn + flatMap: source async, each inner sync', async () => {
+        const received: number[] = [];
+        await new Promise<void>(resolve => {
+            Flux.just(1, 2, 3)
+                .subscribeOn(asyncScheduler)
+                .flatMap(v => Flux.just(v, v * 10))
+                .subscribe(
+                    v => received.push(v),
+                    _e => {},
+                    resolve,
+                );
+        });
+        expect(received).toEqual([1, 10, 2, 20, 3, 30]);
+    });
+
+    test('publishOn + flatMap with inner publishOn: both layers async', async () => {
+        const received: number[] = [];
+        await new Promise<void>(resolve => {
+            Flux.just(1, 2)
+                .publishOn(asyncScheduler)
+                .flatMap(v => Flux.just(v * 100).publishOn(asyncScheduler))
+                .subscribe(
+                    v => received.push(v),
+                    _e => {},
+                    resolve,
+                );
+        });
+        expect(received.sort((a, b) => a - b)).toEqual([100, 200]);
+    });
+
+    test('flatMap error in inner publisher propagates to onError', async () => {
+        const err = new Error('inner-fail');
+        const caught = await new Promise<Error>(resolve => {
+            Flux.just(1, 2, 3)
+                .publishOn(asyncScheduler)
+                .flatMap(v => v === 2
+                    ? Flux.error<number>(err).publishOn(asyncScheduler)
+                    : Mono.just(v),
+                )
+                .subscribe(
+                    () => {},
+                    resolve,
+                );
+        });
+        expect(caught.message).toBe('inner-fail');
+    });
+
+    test('concatMap preserves order with async inner', async () => {
+        const received: number[] = [];
+        await new Promise<void>(resolve => {
+            Flux.just(3, 1, 2)
+                .concatMap(v => Mono.just(v * 10).publishOn(asyncScheduler))
+                .subscribe(
+                    v => received.push(v),
+                    _e => {},
+                    resolve,
+                );
+        });
+        // concatMap is ordered — must arrive as 30, 10, 20
+        expect(received).toEqual([30, 10, 20]);
+    });
+});
