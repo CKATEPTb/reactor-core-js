@@ -32,6 +32,7 @@ export class Flux<T> extends AbstractPipePublisher<T> implements PipePublisher<T
                 const buffer: T[] = [];
                 let demand = 0;
                 let terminated = false;
+                let terminalDelivered = false;
                 let terminalError: Error | null = null;
                 let cancelled = false;
                 let draining = false;
@@ -45,7 +46,8 @@ export class Flux<T> extends AbstractPipePublisher<T> implements PipePublisher<T
                             subscriber.onNext(buffer.shift()!);
                             if (cancelled) return;
                         }
-                        if (buffer.length === 0 && terminated) {
+                        if (!terminalDelivered && buffer.length === 0 && terminated) {
+                            terminalDelivered = true;
                             terminalError
                                 ? subscriber.onError(terminalError)
                                 : subscriber.onComplete();
@@ -74,14 +76,6 @@ export class Flux<T> extends AbstractPipePublisher<T> implements PipePublisher<T
                     }
                 };
 
-                try { generator(sink); }
-                catch (e) {
-                    if (!terminated) {
-                        terminated = true;
-                        terminalError = e instanceof Error ? e : new Error(String(e));
-                    }
-                }
-
                 const subscription: Subscription = {
                     request(n: number) {
                         if (cancelled) return;
@@ -97,7 +91,19 @@ export class Flux<T> extends AbstractPipePublisher<T> implements PipePublisher<T
                         buffer.length = 0;
                     }
                 };
+
+                // Rule 1.3: onSubscribe MUST be the first signal — call it before the generator.
                 subscriber.onSubscribe(subscription);
+
+                try { generator(sink); }
+                catch (e) {
+                    if (!terminated) {
+                        terminated = true;
+                        terminalError = e instanceof Error ? e : new Error(String(e));
+                        drain();
+                    }
+                }
+
                 return subscription;
             }
         });
