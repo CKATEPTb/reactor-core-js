@@ -6,16 +6,16 @@ import {Subscriber} from "@/subscriptions/Subscriber";
 import {Subscription} from "@/subscriptions/Subscription";
 import ReplayAllSink from "@/sinks/ReplayAllSink";
 import {AbstractPipePublisher} from "@/publishers/internal/AbstractPipePublisher";
-import {Scheduler, Schedulers} from "@/schedulers";
+import {Schedulers} from "@/schedulers";
 
-export class Flux<T> extends AbstractPipePublisher<T> implements PipePublisher<T> {
+export class Flux<T> extends AbstractPipePublisher<T, Flux<T>> implements PipePublisher<T> {
 
     protected constructor(source: Publisher<T>) { super(source); }
 
     protected defaultDemand(): number { return Number.MAX_SAFE_INTEGER; }
 
-    protected wrapSource(source: Publisher<T>): this {
-        return new Flux<T>(source) as unknown as this;
+    protected wrapSource(source: Publisher<T>): Flux<T> {
+        return new Flux<T>(source);
     }
 
     // ─────────────────────────── Static factories ────────────────────────────
@@ -259,6 +259,9 @@ export class Flux<T> extends AbstractPipePublisher<T> implements PipePublisher<T
     }
 
     /** Merge-style flatMap: subscribes to each inner publisher concurrently as values arrive. */
+    public flatMap<R>(fn: (value: T) => Flux<R>): Flux<R>;
+    public flatMap<R>(fn: (value: T) => Mono<R>): Flux<R>;
+    public flatMap<R>(fn: (value: T) => Publisher<R>): Flux<R>;
     public flatMap<R>(fn: (value: T) => Publisher<R>): Flux<R> {
         return new Flux<R>({
             subscribe: (subscriber: Subscriber<R>): Subscription => {
@@ -331,6 +334,9 @@ export class Flux<T> extends AbstractPipePublisher<T> implements PipePublisher<T
     }
 
     /** Sequential flatMap: subscribes to each inner publisher one at a time, in order. */
+    public concatMap<R>(fn: (value: T) => Flux<R>): Flux<R>;
+    public concatMap<R>(fn: (value: T) => Mono<R>): Flux<R>;
+    public concatMap<R>(fn: (value: T) => Publisher<R>): Flux<R>;
     public concatMap<R>(fn: (value: T) => Publisher<R>): Flux<R> {
         return new Flux<R>({
             subscribe: (subscriber: Subscriber<R>): Subscription => {
@@ -395,6 +401,9 @@ export class Flux<T> extends AbstractPipePublisher<T> implements PipePublisher<T
     }
 
     /** Like flatMap but cancels the previous inner subscription when a new outer value arrives. */
+    public switchMap<R>(fn: (value: T) => Flux<R>): Flux<R>;
+    public switchMap<R>(fn: (value: T) => Mono<R>): Flux<R>;
+    public switchMap<R>(fn: (value: T) => Publisher<R>): Flux<R>;
     public switchMap<R>(fn: (value: T) => Publisher<R>): Flux<R> {
         return new Flux<R>({
             subscribe: (subscriber: Subscriber<R>): Subscription => {

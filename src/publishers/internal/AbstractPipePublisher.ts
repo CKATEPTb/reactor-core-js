@@ -15,7 +15,7 @@ import {Scheduler} from "@/schedulers/Scheduler";
  *  - doFinally            — Flux also fires fn on cancel; Mono does not
  *  - map / flatMap / cast / pipe / mapNotNull — change the type T → R
  */
-export abstract class AbstractPipePublisher<T> implements Publisher<T> {
+export abstract class AbstractPipePublisher<T, Self> implements Publisher<T> {
 
     protected constructor(protected readonly source: Publisher<T>) {}
 
@@ -73,11 +73,11 @@ export abstract class AbstractPipePublisher<T> implements Publisher<T> {
      * Wraps a publisher in the concrete subclass type.
      * Called internally by every operator that preserves T.
      */
-    protected abstract wrapSource(source: Publisher<T>): this;
+    protected abstract wrapSource(source: Publisher<T>): Self;
 
     // ──────────────────────── Error handling ────────────────────────────────
 
-    public switchIfEmpty(alternative: Publisher<T>): this {
+    public switchIfEmpty(alternative: Publisher<T>): Self {
         return this.wrapSource({
             subscribe: (subscriber: Subscriber<T>): Subscription => {
                 let primarySub: Subscription = { request() {}, unsubscribe() {} };
@@ -122,7 +122,7 @@ export abstract class AbstractPipePublisher<T> implements Publisher<T> {
         });
     }
 
-    public onErrorReturn(replacement: Publisher<T>): this {
+    public onErrorReturn(replacement: Publisher<T>): Self {
         return this.wrapSource({
             subscribe: (subscriber: Subscriber<T>): Subscription => {
                 let primarySub: Subscription = { request() {}, unsubscribe() {} };
@@ -166,7 +166,7 @@ export abstract class AbstractPipePublisher<T> implements Publisher<T> {
         });
     }
 
-    public onErrorContinue(predicate: (error: Error) => boolean): this {
+    public onErrorContinue(predicate: (error: Error) => boolean): Self {
         return this.wrapSource({
             subscribe: (subscriber: Subscriber<T>): Subscription => {
                 const sub = this.source.subscribe({
@@ -186,7 +186,7 @@ export abstract class AbstractPipePublisher<T> implements Publisher<T> {
 
     // ──────────────────────── Side effects ──────────────────────────────────
 
-    public doFirst(fn: () => void): this {
+    public doFirst(fn: () => void): Self {
         return this.wrapSource({
             subscribe: (subscriber: Subscriber<T>): Subscription => {
                 let first = true;
@@ -205,7 +205,7 @@ export abstract class AbstractPipePublisher<T> implements Publisher<T> {
         });
     }
 
-    public doOnNext(fn: (value: T) => void): this {
+    public doOnNext(fn: (value: T) => void): Self {
         return this.wrapSource({
             subscribe: (subscriber: Subscriber<T>): Subscription => {
                 const sub = this.source.subscribe({
@@ -220,7 +220,7 @@ export abstract class AbstractPipePublisher<T> implements Publisher<T> {
         });
     }
 
-    public doOnError(fn: (error: Error) => void): this {
+    public doOnError(fn: (error: Error) => void): Self {
         return this.wrapSource({
             subscribe: (subscriber: Subscriber<T>): Subscription => {
                 const sub = this.source.subscribe({
@@ -235,7 +235,7 @@ export abstract class AbstractPipePublisher<T> implements Publisher<T> {
         });
     }
 
-    public doOnSubscribe(fn: (subscription: Subscription) => void): this {
+    public doOnSubscribe(fn: (subscription: Subscription) => void): Self {
         return this.wrapSource({
             subscribe: (subscriber: Subscriber<T>): Subscription => {
                 const sub = this.source.subscribe({
@@ -253,7 +253,7 @@ export abstract class AbstractPipePublisher<T> implements Publisher<T> {
 
     // ──────────────────────── Scheduling ────────────────────────────────────
 
-    public publishOn(scheduler: Scheduler): this {
+    public publishOn(scheduler: Scheduler): Self {
         return this.wrapSource({
             subscribe: (subscriber: Subscriber<T>): Subscription => {
                 const sub = this.source.subscribe({
@@ -268,7 +268,7 @@ export abstract class AbstractPipePublisher<T> implements Publisher<T> {
         });
     }
 
-    public subscribeOn(scheduler: Scheduler): this {
+    public subscribeOn(scheduler: Scheduler): Self {
         return this.wrapSource({
             subscribe: (subscriber: Subscriber<T>): Subscription => {
                 let sub: Subscription | null = null;

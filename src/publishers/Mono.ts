@@ -6,14 +6,14 @@ import {Subscriber} from "@/subscriptions/Subscriber";
 import {Subscription} from "@/subscriptions/Subscription";
 import {AbstractPipePublisher} from "@/publishers/internal/AbstractPipePublisher";
 
-export class Mono<T> extends AbstractPipePublisher<T> implements PipePublisher<T> {
+export class Mono<T> extends AbstractPipePublisher<T, Mono<T>> implements PipePublisher<T> {
 
     protected constructor(source: Publisher<T>) { super(source); }
 
     protected defaultDemand(): number { return 1; }
 
-    protected wrapSource(source: Publisher<T>): this {
-        return new Mono<T>(source) as unknown as this;
+    protected wrapSource(source: Publisher<T>): Mono<T> {
+        return new Mono<T>(source);
     }
 
     // ─────────────────────────── Static factories ────────────────────────────
@@ -209,6 +209,8 @@ export class Mono<T> extends AbstractPipePublisher<T> implements PipePublisher<T
         });
     }
 
+    public flatMap<R>(fn: (value: T) => Mono<R>): Mono<R>;
+    public flatMap<R>(fn: (value: T) => Publisher<R>): Mono<R>;
     public flatMap<R>(fn: (value: T) => Publisher<R>): Mono<R> {
         return new Mono<R>({
             subscribe: (subscriber: Subscriber<R>): Subscription => {
@@ -400,6 +402,9 @@ export class Mono<T> extends AbstractPipePublisher<T> implements PipePublisher<T
     // ─────────────────────── Mono-specific operators ─────────────────────────
 
     /** Maps the value to a multi-value Publisher, returning a Flux. */
+    public flatMapMany<R>(mapper: (value: T) => Flux<R>): Flux<R>;
+    public flatMapMany<R>(mapper: (value: T) => Mono<R>): Flux<R>;
+    public flatMapMany<R>(mapper: (value: T) => Publisher<R>): Flux<R>;
     public flatMapMany<R>(mapper: (value: T) => Publisher<R>): Flux<R> {
         return Flux.from<R>({
             subscribe: (subscriber: Subscriber<R>): Subscription => {

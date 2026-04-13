@@ -29,6 +29,9 @@
   "references": [
     {
       "path": "./tsconfig.tsup.json"
+    },
+    {
+      "path": "./tsconfig.test.json"
     }
   ]
 }
