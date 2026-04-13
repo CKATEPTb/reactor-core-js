@@ -6,6 +6,7 @@ import {Subscriber} from "@/subscriptions/Subscriber";
 import {Subscription} from "@/subscriptions/Subscription";
 import ReplayAllSink from "@/sinks/ReplayAllSink";
 import {AbstractPipePublisher} from "@/publishers/internal/AbstractPipePublisher";
+import {Scheduler, Schedulers} from "@/schedulers";
 
 export class Flux<T> extends AbstractPipePublisher<T> implements PipePublisher<T> {
 
@@ -1205,7 +1206,7 @@ export class Flux<T> extends AbstractPipePublisher<T> implements PipePublisher<T
             subscribe: (subscriber: Subscriber<T>): Subscription => {
                 const sub = this.source.subscribe({
                     onSubscribe(_s) {},
-                    onNext(v) { setTimeout(() => subscriber.onNext(v), ms); },
+                    onNext(v) { Schedulers.delay(ms).schedule(() => subscriber.onNext(v)); },
                     onError(e) { subscriber.onError(e); },
                     onComplete() { subscriber.onComplete(); }
                 });
