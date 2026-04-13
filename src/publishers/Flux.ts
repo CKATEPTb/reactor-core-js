@@ -1,674 +1,1979 @@
-import {AbstractPipePublisher} from "@/publishers/PipePublisher";
+import {PipePublisher} from "@/publishers/PipePublisher";
 import {Publisher} from "@/publishers/Publisher";
 import {Sink} from "@/sinks/Sink";
-import ManySink from "@/sinks/ManySink";
 import {Mono} from "@/publishers/Mono";
-import {Scheduler} from "@/schedulers/Scheduler";
-import {combine} from "@/utils";
-import {MicroScheduler} from "@/schedulers/MicroScheduler";
-import {DelayScheduler} from "@/schedulers/DelayScheduler";
-import {Subscription} from "@/subscriptions/Subscription";
 import {Subscriber} from "@/subscriptions/Subscriber";
+import {Subscription} from "@/subscriptions/Subscription";
+import ReplayAllSink from "@/sinks/ReplayAllSink";
+import {AbstractPipePublisher} from "@/publishers/internal/AbstractPipePublisher";
+import {Schedulers} from "@/schedulers";
 
 /**
- * Represents a Flux publisher that can emit multiple values over time.
- * Provides rich reactive programming capabilities such as transformation, filtering, and combination.
- * @template T - The type of data being published.
+ * A cold publisher of 0 to N items with full backpressure support.
+ *
+ * Items flow only when the downstream {@link Subscription} issues `request(n)`.
+ * The convenience `subscribe(onNext, onError, onComplete)` overloads
+ * automatically request `Number.MAX_SAFE_INTEGER` so items start arriving
+ * without extra ceremony.
+ *
+ * Each `subscribe()` call creates an **independent** run of the pipeline
+ * ("cold" semantics). Use {@link Flux.cache} or {@link Sinks} to share a
+ * single run across multiple subscribers.
+ *
+ * @typeParam T - The type of items emitted by this Flux.
+ *
+ * @example
+ * ```typescript
+ * Flux.just(1, 2, 3)
+ *   .map(n => n * 2)
+ *   .filter(n => n > 2)
+ *   .subscribe(v => console.log(v));
+ * // 4  6
+ * ```
  */
-export class Flux<T> extends AbstractPipePublisher<T> {
-    protected constructor(publisher: Publisher<T>) {
-        super(publisher)
+export class Flux<T> extends AbstractPipePublisher<T, Flux<T>> implements PipePublisher<T> {
+
+    protected constructor(source: Publisher<T>) { super(source); }
+
+    protected defaultDemand(): number { return Number.MAX_SAFE_INTEGER; }
+
+    protected wrapSource(source: Publisher<T>): Flux<T> {
+        return new Flux<T>(source);
     }
 
-    /**
-     * Generates a Flux instance using a generator function.
-     * @template T - The type of data.
-     * @param {Function} generator - The function to generate values.
-     * @returns {Flux<T>} A new Flux instance.
-     */
-    public static generate<T>(generator: ((sink: Sink<T>) => void)): Flux<T> {
-        return new Flux(combine(new ManySink<T>(), generator))
-    }
+    // ─────────────────────────── Static factories ────────────────────────────
 
     /**
-     * Creates a Flux instance from another publisher.
-     * @template T - The type of data.
-     * @param {Publisher<T>} publisher - The source publisher.
-     * @returns {Flux<T>} A new Flux instance.
+     * Wraps an existing {@link Publisher} as a `Flux`.
+     *
+     * @param publisher - Any `Publisher<T>` to adapt.
+     * @returns A `Flux<T>` backed by the given publisher.
      */
     public static from<T>(publisher: Publisher<T>): Flux<T> {
-        return Flux.generate(sink => {
-            return publisher.subscribe({
-                onNext(value: T) {
-                    sink.next(value)
-                },
-                onError(error: Error) {
-                    sink.error(error)
-                },
-                onComplete() {
-                    sink.complete()
-                }
-            })
-        })
+        return new Flux<T>(publisher);
     }
 
     /**
-     * Creates a Flux from an iterable collection.
-     * @template T - The type of data.
-     * @param {Iterable<T>} iterable - An iterable to create the Flux from.
-     * @returns {Flux<T>} A new Flux instance.
-     */
-    public static fromIterable<T>(iterable: Iterable<T>): Flux<T> {
-        return Flux.generate(sink => {
-            for (const value of iterable) {
-                sink.next(value);
-            }
-            sink.complete();
-        })
-    }
-
-    /**
-     * Creates a Flux that emits a range of numbers.
-     * @param {number} start - The starting number.
-     * @param {number} count - The number of elements to emit.
-     * @returns {Flux<number>} A new Flux emitting the range of numbers.
-     */
-    public static range(start: number, count: number): Flux<number> {
-        return Flux.generate(sink => {
-            let current = start;
-            for (let i = 0; i < count; i++) {
-                sink.next(current++);
-            }
-            sink.complete();
-        })
-    }
-
-    /**
-     * Creates an empty Flux that immediately completes.
-     * @template T - The type of data.
-     * @returns {Flux<T>} A new empty Flux instance.
-     */
-    public static empty<T = never>(): Flux<T> {
-        return Flux.generate(sink => {
-            sink.complete()
-        })
-    }
-
-    /**
-     * Defers the creation of a Flux until it is subscribed to.
-     * @template T - The type of data.
-     * @param {Function} factory - A function that returns a Flux.
-     * @returns {Flux<T>} A new deferred Flux instance.
-     */
-    public static defer<T>(factory: () => Flux<T>): Flux<T> {
-        return Flux.generate(sink => factory().subscribe({
-            onNext(value: T) {
-                sink.next(value)
-            },
-            onError(error: Error) {
-                sink.error(error)
-            },
-            onComplete() {
-                sink.complete()
-            }
-        }))
-    }
-
-    /**
-     * Returns a Mono emitting the first element of the Flux.
-     * @returns {Mono<T>} A Mono containing the first element.
-     */
-    public first(): Mono<T> {
-        let pipeSub: Subscription
-        return this.pipe((onNext, onError, onComplete) => {
-            pipeSub = this.subscribe({
-                onNext,
-                onError,
-                onComplete
-            })
-        }, _ => pipeSub?.request(1), () => pipeSub?.unsubscribe(), Mono as any) as unknown as Mono<T>
-    }
-
-    /**
-     * Returns a Mono emitting the last element of the Flux.
-     * @returns {Mono<T>} A Mono containing the last element.
-     */
-    public last(): Mono<T> {
-        let pipeSub: Subscription
-        return this.pipe((onNext, onError, onComplete) => {
-            let lastValue: T | undefined
-            let lastError: Error | undefined
-            pipeSub = this.subscribe({
-                onNext(value: T): void {
-                    lastError = undefined
-                    lastValue = value
-                },
-                onError(error: Error): void {
-                    lastValue = undefined
-                    lastError = error
-                },
-                onComplete(): void {
-                    if (lastValue != undefined) onNext(lastValue)
-                    else if (lastError != undefined) onError(lastError)
-                    else onComplete()
-                }
-            })
-        }, _ => pipeSub?.request(Number.MAX_SAFE_INTEGER), () => pipeSub?.unsubscribe(), Mono as any) as unknown as Mono<T>
-    }
-
-    /**
-     * Returns a Mono that emits the count of elements in the Flux.
-     * @returns {Mono<number>} A Mono containing the number of elements.
-     */
-    public count(): Mono<number> {
-        return this.collect().map(value => value.length)
-    }
-
-    /**
-     * Checks whether the Flux has any elements.
-     * @returns {Mono<boolean>} A Mono emitting true if there are elements, false otherwise.
-     */
-    public hasElements(): Mono<boolean> {
-        return this.count().map(value => value > 0)
-    }
-
-    /**
-     * Collects all emitted items into an array.
-     * @param {boolean} [force=false] - Forces immediate collection.
-     * @returns {Mono<T[]>} A Mono containing an array of collected items.
-     */
-    public collect(force: boolean = false): Mono<T[]> {
-        let pipeSub: Subscription
-        return this.pipe((onNext, onError, _) => {
-            const buffer: T[] = []
-            pipeSub = this.subscribe({
-                onNext(value: T): void {
-                    buffer.push(value)
-                },
-                onError(error: Error): void {
-                    onError(error)
-                },
-                onComplete() {
-                    onNext(buffer)
-                }
-            })
-            if (force) new MicroScheduler().schedule(() => {
-                try {
-                    onNext(buffer)
-                } catch (e) {
-                }
-                pipeSub.unsubscribe()
-            })
-        }, _ => pipeSub?.request(Number.MAX_SAFE_INTEGER), () => pipeSub?.unsubscribe(), Mono as any) as unknown as Mono<T[]>
-    }
-
-    /**
-     * Attaches an index to each emitted value.
-     * @returns {Flux<[number, T]>} A new Flux containing tuples of (index, value).
-     */
-    public indexed(): Flux<[number, T]> {
-        let pipeSub: Subscription
-        return this.pipe((onNext, onError, onComplete) => {
-            let index = 0
-            pipeSub = this.subscribe({
-                onNext(value: T): void {
-                    onNext([index++, value])
-                },
-                onError,
-                onComplete
-            })
-        }, request => pipeSub?.request(request), () => pipeSub?.unsubscribe())
-    }
-
-    /**
-     * Skips the first `n` emitted elements.
-     * @param {number} n - The number of elements to skip.
-     * @returns {Flux<T>} A new Flux without the skipped elements.
-     */
-    public skip(n: number): Flux<T> {
-        return this.indexed()
-            .filter(value => value[0] >= n)
-            .map(value => value[1])
-    }
-
-    /**
-     * Skips elements while the given predicate returns true.
-     * @param {Function} predicate - A function that takes a value and returns a boolean.
-     * @returns {Flux<T>} A new Flux without the skipped elements.
-     */
-    public skipWhile(predicate: (value: T) => boolean): Flux<T> {
-        let pipeSub: Subscription
-        return this.pipe((onNext, onError, onComplete) => {
-            let skipping = true
-            pipeSub = this.subscribe({
-                onNext(value: T): void {
-                    if (!skipping || !predicate(value)) {
-                        skipping = false
-                        onNext(value)
-                    } else onNext(null as T)
-                },
-                onError,
-                onComplete
-            })
-        }, request => pipeSub?.request(request + 1), () => pipeSub?.unsubscribe())
-    }
-
-    /**
-     * Skips elements until another Publisher emits an item.
-     * @param {Publisher<any>} other - The publisher to wait for.
-     * @returns {Flux<T>} A new Flux that skips elements until the other publisher emits.
-     */
-    public skipUntil(other: Publisher<any>): Flux<T> {
-        let pipeSub: Subscription
-        return this.pipe((onNext, onError, onComplete) => {
-            let open = false;
-            const sub = this.subscribe({
-                onNext: (value) => {
-                    if (open) onNext(value)
-                    else onNext(null as T)
-                },
-                onError,
-                onComplete
-            })
-            const sub2 = other.subscribe({
-                onNext(_: any): void {
-                    open = true
-                },
-                onError,
-                onComplete(): void {
-                }
-            })
-            pipeSub = {
-                request(count: number) {
-                    sub.request(count)
-                    sub2.request(count)
-                },
-                unsubscribe() {
-                    sub.unsubscribe()
-                    sub2.unsubscribe()
-                }
-            } as Subscription
-        }, request => pipeSub?.request(request + 1), () => pipeSub?.unsubscribe())
-    }
-
-    /**
-     * Emits only distinct elements, discarding duplicates.
-     * @returns {Flux<T>} A new Flux containing only distinct elements.
-     */
-    public distinct(): Flux<T> {
-        let sub: Subscription
-        return this.pipe((onNext, onError, onComplete) => {
-            const seen = new Set<T>()
-            sub = this.subscribe({
-                onNext: (value) => {
-                    if (!seen.has(value)) {
-                        seen.add(value)
-                        onNext(value)
-                    } else onNext(null as T)
-                },
-                onError,
-                onComplete
-            })
-        }, request => sub?.request(request + 1), () => sub?.unsubscribe())
-    }
-
-    /**
-     * Emits items only when they differ from the previous item.
-     * @param {Function} comparator - A function to compare previous and current items.
-     * @returns {Flux<T>} A new Flux with distinct consecutive items.
-     */
-    public distinctUntilChanged(comparator: (previous: T, current: T) => boolean = (previous, current) => previous != current): Flux<T> {
-        let sub: Subscription
-        return this.pipe((onNext, onError, onComplete) => {
-            let previous: T | null = null
-            sub = this.subscribe({
-                onNext(value: T) {
-                    if (previous == null || comparator(previous, value)) {
-                        onNext(previous = value);
-                    } else onNext(null as T)
-                },
-                onError(error: Error) {
-                    onError(error)
-                },
-                onComplete() {
-                    onComplete()
-                }
-            })
-        }, request => sub?.request(request + 1), () => sub?.unsubscribe())
-    }
-
-    /**
-     * Delays each emitted element by a specified duration.
-     * @param {number} ms - The delay duration in milliseconds.
-     * @returns {Flux<T>} A new Flux with delayed elements.
-     */
-    public delayElements(ms: number): Flux<T> {
-        let sub: Subscription
-        return this.pipe((onNext, onError, onComplete) => {
-            let promise = Promise.resolve()
-            const emit = (fn: () => void) => {
-                promise = promise.then(() => new Promise<void>(resolve => {
-                    new DelayScheduler(ms).schedule(() => {
-                        fn()
-                        resolve()
-                    })
-                }))
-            }
-            sub = this.subscribe({
-                onNext(value: T) {
-                    emit(() => onNext(value))
-                },
-                onError(error: Error) {
-                    emit(() => onError(error))
-                },
-                onComplete() {
-                    emit(() => onComplete())
-                }
-            })
-        }, request => sub?.request(request), () => sub?.unsubscribe())
-    }
-
-    /**
-     * Concatenates the current Flux with another Publisher.
-     * The current Flux is emitted first, and once it completes, the second Publisher starts emitting.
+     * Creates a `Flux` from a generator function that pushes values imperatively.
      *
-     * @param {Publisher<T>} other - The Publisher to concatenate after the current one completes.
-     * @returns {Flux<T>} A new Flux that first emits the values from the current Flux and then from the other Publisher.
-     */
-    public concatWith(other: Publisher<T>): Flux<T> {
-        let pipeSub: Subscription
-        return this.pipe((onNext, onError, onComplete) => {
-            let second: Subscription | undefined
-            const first = this.subscribe({
-                onNext(value: T) {
-                    onNext(value)
-                },
-                onError(error: Error) {
-                    onError(error)
-                },
-                onComplete() {
-                    second = other.subscribe({
-                        onNext,
-                        onError,
-                        onComplete
-                    })
-                }
-            })
-            pipeSub = {
-                request(count: number) {
-                    first.request(count)
-                    second?.request(count)
-                },
-                unsubscribe() {
-                    first.unsubscribe()
-                    second?.unsubscribe()
-                }
-            } as Subscription
-        }, request => pipeSub?.request(request), () => pipeSub?.unsubscribe())
-    }
-
-    /**
-     * Merges the current Flux with another Publisher.
-     * Both Publishers emit values concurrently as they become available.
+     * The generator receives a {@link Sink} and may call `sink.next(v)` any number
+     * of times, then `sink.complete()` or `sink.error(e)`.  Delivery is
+     * **backpressure-aware**: items pushed when demand is zero are buffered and
+     * delivered as downstream issues `request(n)`.
      *
-     * @param {Publisher<T>} other - The other Publisher to merge with.
-     * @returns {Flux<T>} A new Flux that emits values from both Publishers as they arrive.
+     * Rule 1.3 is respected — `onSubscribe` is delivered to the subscriber
+     * **before** the generator runs.
+     *
+     * @param generator - Function that pushes items via the provided `Sink<T>`.
+     * @returns A cold `Flux<T>`.
+     *
+     * @example
+     * ```typescript
+     * Flux.generate<number>(sink => {
+     *   sink.next(1);
+     *   sink.next(2);
+     *   sink.complete();
+     * }).subscribe(v => console.log(v)); // 1  2
+     * ```
      */
-    public mergeWith(other: Publisher<T>): Flux<T> {
-        let pipeSub: Subscription
-        return this.pipe((onNext, onError, onComplete) => {
-            let left = 2
-            const subscriber = {
-                onNext,
-                onError,
-                onComplete() {
-                    if (--left <= 0) {
-                        onComplete()
+    public static generate<T>(generator: (sink: Sink<T>) => void): Flux<T> {
+        return new Flux<T>({
+            subscribe(subscriber: Subscriber<T>): Subscription {
+                const buffer: T[] = [];
+                let demand = 0;
+                let terminated = false;
+                let terminalDelivered = false;
+                let terminalError: Error | null = null;
+                let cancelled = false;
+                let draining = false;
+
+                const drain = () => {
+                    if (draining || cancelled) return;
+                    draining = true;
+                    try {
+                        while (demand > 0 && buffer.length > 0) {
+                            demand--;
+                            subscriber.onNext(buffer.shift()!);
+                            if (cancelled) return;
+                        }
+                        if (!terminalDelivered && buffer.length === 0 && terminated) {
+                            terminalDelivered = true;
+                            terminalError
+                                ? subscriber.onError(terminalError)
+                                : subscriber.onComplete();
+                        }
+                    } finally {
+                        draining = false;
+                    }
+                };
+
+                const sink: Sink<T> = {
+                    next(v: T) {
+                        if (terminated || cancelled) return;
+                        if (demand > 0) { demand--; subscriber.onNext(v); }
+                        else buffer.push(v);
+                    },
+                    error(err: Error) {
+                        if (terminated || cancelled) return;
+                        terminated = true;
+                        terminalError = err;
+                        drain();
+                    },
+                    complete() {
+                        if (terminated || cancelled) return;
+                        terminated = true;
+                        drain();
+                    }
+                };
+
+                const subscription: Subscription = {
+                    request(n: number) {
+                        if (cancelled) return;
+                        if (n <= 0) {
+                            subscriber.onError(new Error(`request must be > 0, but was ${n}`));
+                            return;
+                        }
+                        demand = Math.min(demand + n, Number.MAX_SAFE_INTEGER);
+                        drain();
+                    },
+                    unsubscribe() {
+                        cancelled = true;
+                        buffer.length = 0;
+                    }
+                };
+
+                // Rule 1.3: onSubscribe MUST be the first signal — call it before the generator.
+                subscriber.onSubscribe(subscription);
+
+                try { generator(sink); }
+                catch (e) {
+                    if (!terminated) {
+                        terminated = true;
+                        terminalError = e instanceof Error ? e : new Error(String(e));
+                        drain();
                     }
                 }
-            } as Subscriber<T>
-            const first = this.subscribe(subscriber)
-            const second = other.subscribe(subscriber)
-            pipeSub = {
-                request(count: number) {
-                    first.request(count)
-                    second.request(count)
-                },
-                unsubscribe() {
-                    first.unsubscribe()
-                    second.unsubscribe()
-                }
-            } as Subscription
-        }, request => pipeSub?.request(request), () => pipeSub?.unsubscribe())
+
+                return subscription;
+            }
+        });
     }
 
     /**
-     * Reduces the items emitted by this Flux using a given accumulator function.
-     * Aggregates the items into a single result.
+     * Creates a `Flux` that emits every element of an `Iterable` in order, then completes.
      *
-     * @param {Function} reducer - A function that combines the accumulated value and the next item.
-     * @returns {Mono<T>} A Mono that emits the final accumulated value.
+     * @param iterable - Any `Iterable<T>` (Array, Set, Map, generator, etc.).
+     * @returns A cold `Flux<T>`.
+     *
+     * @example
+     * ```typescript
+     * Flux.fromIterable(['a', 'b', 'c']).subscribe(v => console.log(v));
+     * // a  b  c
+     * ```
+     */
+    public static fromIterable<T>(iterable: Iterable<T>): Flux<T> {
+        return Flux.generate<T>(sink => {
+            for (const item of iterable) sink.next(item);
+            sink.complete();
+        });
+    }
+
+    /**
+     * Creates a `Flux` that emits `count` sequential integers starting at `start`.
+     *
+     * @param start - First integer to emit.
+     * @param count - Number of integers to emit.
+     * @returns A cold `Flux<number>` emitting `[start, start + count)`.
+     *
+     * @example
+     * ```typescript
+     * Flux.range(0, 5).subscribe(v => console.log(v)); // 0 1 2 3 4
+     * ```
+     */
+    public static range(start: number, count: number): Flux<number> {
+        return Flux.generate<number>(sink => {
+            for (let i = 0; i < count; i++) sink.next(start + i);
+            sink.complete();
+        });
+    }
+
+    /**
+     * Creates a `Flux` that completes immediately without emitting any items.
+     *
+     * @returns An empty, completed `Flux<T>`.
+     */
+    public static empty<T = never>(): Flux<T> {
+        return new Flux<T>({
+            subscribe(subscriber: Subscriber<T>): Subscription {
+                const sub = { request() {}, unsubscribe() {} };
+                subscriber.onSubscribe(sub);
+                subscriber.onComplete();
+                return sub;
+            }
+        });
+    }
+
+    /**
+     * Lazily creates a new `Flux` per subscription by calling `factory`.
+     *
+     * Useful when the source depends on mutable state that should be captured
+     * at subscribe time rather than at assembly time.
+     *
+     * @param factory - Called once per subscription to produce the actual `Flux<T>`.
+     * @returns A lazy `Flux<T>`.
+     */
+    public static defer<T>(factory: () => Flux<T>): Flux<T> {
+        return new Flux<T>({
+            subscribe(subscriber: Subscriber<T>): Subscription {
+                return factory().subscribe(subscriber);
+            }
+        });
+    }
+
+    /**
+     * Creates a `Flux` that emits the provided items in order, then completes.
+     *
+     * @param items - Zero or more items to emit.
+     * @returns A cold `Flux<T>`.
+     *
+     * @example
+     * ```typescript
+     * Flux.just(1, 2, 3).subscribe(v => console.log(v)); // 1  2  3
+     * ```
+     */
+    public static just<T>(...items: T[]): Flux<T> {
+        return Flux.fromIterable(items);
+    }
+
+    /**
+     * Creates a `Flux` that signals `onError` immediately upon subscription.
+     *
+     * @param error - The error to signal.
+     * @returns An errored `Flux<T>`.
+     */
+    public static error<T = never>(error: Error): Flux<T> {
+        return new Flux<T>({
+            subscribe(subscriber: Subscriber<T>): Subscription {
+                const sub = { request() {}, unsubscribe() {} };
+                subscriber.onSubscribe(sub);
+                subscriber.onError(error);
+                return sub;
+            }
+        });
+    }
+
+    /**
+     * Creates a `Flux` that never emits any signal — no items, no error, no completion.
+     * Useful as a placeholder or to represent an infinite, empty stream.
+     *
+     * @returns A `Flux<T>` that stays subscribed forever.
+     */
+    public static never<T = never>(): Flux<T> {
+        return new Flux<T>({
+            subscribe(subscriber: Subscriber<T>): Subscription {
+                const sub = { request() {}, unsubscribe() {} };
+                subscriber.onSubscribe(sub);
+                return sub;
+            }
+        });
+    }
+
+    // ─────────────────── PipePublisher operators ──────────────────
+
+    /**
+     * Transforms each item using `fn`, producing a `Flux<R>`.
+     *
+     * If `fn` throws, the exception is forwarded to `onError` and the stream terminates.
+     *
+     * @param fn - Mapping function applied to every item.
+     * @returns A new `Flux<R>`.
+     *
+     * @example
+     * ```typescript
+     * Flux.just(1, 2, 3).map(n => n * 10).subscribe(v => console.log(v));
+     * // 10  20  30
+     * ```
+     */
+    public map<R>(fn: (value: T) => R): Flux<R> {
+        return new Flux<R>({
+            subscribe: (subscriber: Subscriber<R>): Subscription => {
+                const sub = this.source.subscribe({
+                    onSubscribe(_s) {},
+                    onNext(v) {
+                        try { subscriber.onNext(fn(v)); }
+                        catch (e) { subscriber.onError(e instanceof Error ? e : new Error(String(e))); }
+                    },
+                    onError(e) { subscriber.onError(e); },
+                    onComplete() { subscriber.onComplete(); }
+                });
+                subscriber.onSubscribe(sub);
+                return sub;
+            }
+        });
+    }
+
+    /**
+     * Transforms each item with `fn`, silently discarding `null`/`undefined` results.
+     *
+     * When an item is discarded, upstream demand is replenished by 1 so the
+     * downstream demand accounting stays correct.
+     *
+     * @param fn - Mapping function; returning `null` or `undefined` skips the item.
+     * @returns A `Flux<NonNullable<R>>` with nulls filtered out.
+     *
+     * @example
+     * ```typescript
+     * Flux.just('hello', '', 'world')
+     *   .mapNotNull(s => s.length > 0 ? s : null)
+     *   .subscribe(v => console.log(v));
+     * // hello  world
+     * ```
+     */
+    public mapNotNull<R>(fn: (value: T) => R | null | undefined): Flux<NonNullable<R>> {
+        return new Flux<NonNullable<R>>({
+            subscribe: (subscriber: Subscriber<NonNullable<R>>): Subscription => {
+                let sourceSub!: Subscription;
+                const sub = this.source.subscribe({
+                    onSubscribe(s) { sourceSub = s; },
+                    onNext(v) {
+                        try {
+                            const r = fn(v);
+                            if (r != null) subscriber.onNext(r as NonNullable<R>);
+                            else sourceSub.request(1); // replenish: null item skipped
+                        } catch (e) {
+                            subscriber.onError(e instanceof Error ? e : new Error(String(e)));
+                        }
+                    },
+                    onError(e) { subscriber.onError(e); },
+                    onComplete() { subscriber.onComplete(); }
+                });
+                subscriber.onSubscribe(sub);
+                return sub;
+            }
+        });
+    }
+
+    /**
+     * Fine-grained per-item transform: the `handler` receives each item together with
+     * a {@link Sink} and may emit **0 or 1** result items.
+     *
+     * - Calling `sink.next(r)` once emits `r` downstream.
+     * - Calling `sink.next(r)` more than once is silently ignored (0-or-1 semantics).
+     * - Calling `sink.complete()` or `sink.error(e)` terminates the stream early.
+     * - If the handler emits nothing (0 items), upstream demand is replenished by 1.
+     *
+     * This is the Flux equivalent of `reactor-core`'s `handle(BiConsumer<T, SynchronousSink<R>>)`.
+     *
+     * @param handler - Called for each upstream item with the item and an output `Sink<R>`.
+     * @returns A `Flux<R>`.
+     *
+     * @example
+     * ```typescript
+     * // Convert strings to numbers, skip non-numeric entries
+     * Flux.just('1', 'two', '3').handle<number>((s, sink) => {
+     *   const n = parseInt(s);
+     *   if (!isNaN(n)) sink.next(n);
+     * }).subscribe(v => console.log(v));
+     * // 1  3
+     * ```
+     */
+    public handle<R>(handler: (value: T, sink: Sink<R>) => void): Flux<R> {
+        return new Flux<R>({
+            subscribe: (subscriber: Subscriber<R>): Subscription => {
+                let sourceSub!: Subscription;
+                let done = false;
+                const sub = this.source.subscribe({
+                    onSubscribe(s) { sourceSub = s; },
+                    onNext(v) {
+                        if (done) return;
+                        let emitted = false;
+                        const sinkWrapper: Sink<R> = {
+                            next(r) {
+                                if (!emitted && !done) { emitted = true; subscriber.onNext(r); }
+                            },
+                            error(e) { if (!done) { done = true; subscriber.onError(e); } },
+                            complete() { if (!done) { done = true; subscriber.onComplete(); } }
+                        };
+                        try { handler(v, sinkWrapper); }
+                        catch (e) { if (!done) { done = true; subscriber.onError(e instanceof Error ? e : new Error(String(e))); } }
+                        // Replenish: item was skipped (0 emissions) — request one more from upstream
+                        if (!done && !emitted) sourceSub.request(1);
+                    },
+                    onError(e) { if (!done) subscriber.onError(e); },
+                    onComplete() { if (!done) subscriber.onComplete(); }
+                });
+                subscriber.onSubscribe(sub);
+                return sub;
+            }
+        });
+    }
+
+    /**
+     * Maps each item to an inner publisher and merges all inner publishers concurrently
+     * into a single `Flux<R>` (**merge** semantics).
+     *
+     * Inner publishers are subscribed to as soon as their corresponding outer item arrives.
+     * Items from different inner publishers can interleave. The resulting stream completes
+     * when the outer source completes **and** all inner publishers complete. Any error
+     * (from outer or any inner) immediately terminates the stream.
+     *
+     * @param fn - Maps each item to a `Flux<R>`, `Mono<R>`, or any `Publisher<R>`.
+     * @returns A merged `Flux<R>`.
+     *
+     * @example
+     * ```typescript
+     * Flux.just(1, 2, 3)
+     *   .flatMap(n => Mono.just(n * 10))
+     *   .subscribe(v => console.log(v));
+     * // 10  20  30  (order may vary with async inner publishers)
+     * ```
+     */
+    public flatMap<R>(fn: (value: T) => Flux<R>): Flux<R>;
+    public flatMap<R>(fn: (value: T) => Mono<R>): Flux<R>;
+    public flatMap<R>(fn: (value: T) => Publisher<R>): Flux<R>;
+    public flatMap<R>(fn: (value: T) => Publisher<R>): Flux<R> {
+        return new Flux<R>({
+            subscribe: (subscriber: Subscriber<R>): Subscription => {
+                let outerSub: Subscription = { request() {}, unsubscribe() {} };
+                const innerSubs = new Set<Subscription>();
+                let cancelled = false;
+                let terminated = false;
+                let outerDone = false;
+                let demand = 0;
+
+                // Cancel all upstream sources and signal terminal to downstream exactly once.
+                const terminate = (err?: Error) => {
+                    if (terminated) return;
+                    terminated = true;
+                    outerSub.unsubscribe();
+                    for (const s of innerSubs) s.unsubscribe();
+                    innerSubs.clear();
+                    if (err) subscriber.onError(err);
+                    else subscriber.onComplete();
+                };
+
+                const operatorSub: Subscription = {
+                    request(n: number) {
+                        if (cancelled || terminated) return;
+                        if (n <= 0) { terminate(new Error(`request must be > 0, but was ${n}`)); return; }
+                        demand = Math.min(demand + n, Number.MAX_SAFE_INTEGER);
+                        for (const s of innerSubs) s.request(n);
+                    },
+                    unsubscribe() {
+                        cancelled = true;
+                        outerSub.unsubscribe();
+                        for (const s of innerSubs) s.unsubscribe();
+                        innerSubs.clear();
+                    }
+                };
+
+                this.source.subscribe({
+                    onSubscribe(sourceSub: Subscription) {
+                        outerSub = sourceSub;
+                        subscriber.onSubscribe(operatorSub);
+                    },
+                    onNext(v: T) {
+                        if (cancelled || terminated) return;
+                        let inner: Publisher<R>;
+                        try { inner = fn(v); }
+                        catch (e) { terminate(e instanceof Error ? e : new Error(String(e))); return; }
+                        const innerSub = inner.subscribe({
+                            onSubscribe(_s) {},
+                            onNext(r) { if (!cancelled && !terminated) subscriber.onNext(r); },
+                            onError(e) { terminate(e); },
+                            onComplete() {
+                                innerSubs.delete(innerSub);
+                                if (!terminated && outerDone && innerSubs.size === 0) terminate();
+                            }
+                        });
+                        innerSubs.add(innerSub);
+                        if (demand > 0) innerSub.request(demand);
+                    },
+                    onError(e) { terminate(e); },
+                    onComplete() {
+                        outerDone = true;
+                        if (!terminated && innerSubs.size === 0) terminate();
+                    }
+                });
+                outerSub.request(Number.MAX_SAFE_INTEGER);
+
+                return operatorSub;
+            }
+        });
+    }
+
+    /**
+     * Maps each item to an inner publisher and subscribes to them **sequentially**,
+     * preserving order (**concat** semantics).
+     *
+     * The next inner publisher is subscribed to only after the previous one completes.
+     * This guarantees item ordering but has no concurrency.
+     *
+     * @param fn - Maps each item to a `Flux<R>`, `Mono<R>`, or any `Publisher<R>`.
+     * @returns An ordered, sequential `Flux<R>`.
+     *
+     * @example
+     * ```typescript
+     * Flux.just(1, 2, 3)
+     *   .concatMap(n => Mono.just(`item-${n}`))
+     *   .subscribe(v => console.log(v));
+     * // item-1  item-2  item-3
+     * ```
+     */
+    public concatMap<R>(fn: (value: T) => Flux<R>): Flux<R>;
+    public concatMap<R>(fn: (value: T) => Mono<R>): Flux<R>;
+    public concatMap<R>(fn: (value: T) => Publisher<R>): Flux<R>;
+    public concatMap<R>(fn: (value: T) => Publisher<R>): Flux<R> {
+        return new Flux<R>({
+            subscribe: (subscriber: Subscriber<R>): Subscription => {
+                let outerSub!: Subscription;
+                let innerSub: Subscription | null = null;
+                let cancelled = false;
+                let terminated = false;
+                let outerDone = false;
+
+                const terminate = (err?: Error) => {
+                    if (terminated) return;
+                    terminated = true;
+                    outerSub?.unsubscribe();
+                    innerSub?.unsubscribe();
+                    innerSub = null;
+                    if (err) subscriber.onError(err);
+                    else subscriber.onComplete();
+                };
+
+                const operatorSub: Subscription = {
+                    request(n: number) {
+                        if (cancelled || terminated) return;
+                        if (n <= 0) { terminate(new Error(`request must be > 0, but was ${n}`)); return; }
+                        if (innerSub) innerSub.request(n);
+                        else outerSub.request(1);
+                    },
+                    unsubscribe() { cancelled = true; outerSub?.unsubscribe(); innerSub?.unsubscribe(); }
+                };
+
+                this.source.subscribe({
+                    onSubscribe(s: Subscription) {
+                        outerSub = s;
+                        subscriber.onSubscribe(operatorSub);
+                    },
+                    onNext(v: T) {
+                        if (cancelled || terminated) return;
+                        let inner: Publisher<R>;
+                        try { inner = fn(v); }
+                        catch (e) { terminate(e instanceof Error ? e : new Error(String(e))); return; }
+                        inner.subscribe({
+                            onSubscribe(s) { innerSub = s; s.request(Number.MAX_SAFE_INTEGER); },
+                            onNext(r) { if (!cancelled && !terminated) subscriber.onNext(r); },
+                            onError(e) { terminate(e); },
+                            onComplete() {
+                                if (cancelled || terminated) return;
+                                innerSub = null;
+                                if (outerDone) terminate();
+                                else outerSub.request(1);
+                            }
+                        });
+                    },
+                    onError(e) { terminate(e); },
+                    onComplete() {
+                        outerDone = true;
+                        if (innerSub === null) terminate();
+                    }
+                });
+
+                return operatorSub;
+            }
+        });
+    }
+
+    /**
+     * Maps each item to an inner publisher, **cancelling** the previous inner subscription
+     * whenever a new outer item arrives (**switch** semantics).
+     *
+     * Only the most recently started inner publisher is active at any point. This is
+     * useful for patterns like "search as you type" where stale results should be
+     * discarded when a newer request supersedes them.
+     *
+     * @param fn - Maps each item to a `Flux<R>`, `Mono<R>`, or any `Publisher<R>`.
+     * @returns A `Flux<R>` that tracks only the latest inner publisher.
+     */
+    public switchMap<R>(fn: (value: T) => Flux<R>): Flux<R>;
+    public switchMap<R>(fn: (value: T) => Mono<R>): Flux<R>;
+    public switchMap<R>(fn: (value: T) => Publisher<R>): Flux<R>;
+    public switchMap<R>(fn: (value: T) => Publisher<R>): Flux<R> {
+        return new Flux<R>({
+            subscribe: (subscriber: Subscriber<R>): Subscription => {
+                let outerSub!: Subscription;
+                let innerSub: Subscription | null = null;
+                let cancelled = false;
+                let terminated = false;
+                let outerDone = false;
+                let demand = 0;
+                let generation = 0;
+
+                const terminate = (err?: Error) => {
+                    if (terminated) return;
+                    terminated = true;
+                    outerSub?.unsubscribe();
+                    innerSub?.unsubscribe();
+                    innerSub = null;
+                    if (err) subscriber.onError(err);
+                    else subscriber.onComplete();
+                };
+
+                const operatorSub: Subscription = {
+                    request(n: number) {
+                        if (cancelled || terminated) return;
+                        if (n <= 0) { terminate(new Error(`request must be > 0, but was ${n}`)); return; }
+                        demand = Math.min(demand + n, Number.MAX_SAFE_INTEGER);
+                        if (innerSub) innerSub.request(n);
+                    },
+                    unsubscribe() { cancelled = true; outerSub?.unsubscribe(); innerSub?.unsubscribe(); }
+                };
+
+                this.source.subscribe({
+                    onSubscribe(s: Subscription) {
+                        outerSub = s;
+                        subscriber.onSubscribe(operatorSub);
+                    },
+                    onNext(v: T) {
+                        if (cancelled || terminated) return;
+                        innerSub?.unsubscribe();
+                        innerSub = null;
+                        const myGen = ++generation;
+                        let inner: Publisher<R>;
+                        try { inner = fn(v); }
+                        catch (e) { terminate(e instanceof Error ? e : new Error(String(e))); return; }
+                        inner.subscribe({
+                            onSubscribe(s) {
+                                if (generation !== myGen || cancelled || terminated) { s.unsubscribe(); return; }
+                                innerSub = s;
+                                if (demand > 0) s.request(demand);
+                            },
+                            onNext(r) { if (generation === myGen && !cancelled && !terminated) subscriber.onNext(r); },
+                            onError(e) { if (generation === myGen) terminate(e); },
+                            onComplete() {
+                                if (generation !== myGen || cancelled || terminated) return;
+                                innerSub = null;
+                                if (outerDone) terminate();
+                            }
+                        });
+                    },
+                    onError(e) { terminate(e); },
+                    onComplete() {
+                        outerDone = true;
+                        if (innerSub === null) terminate();
+                    }
+                });
+                outerSub.request(Number.MAX_SAFE_INTEGER);
+
+                return operatorSub;
+            }
+        });
+    }
+
+    /**
+     * Passes only items for which `predicate` returns `true`.
+     *
+     * Each dropped item replenishes upstream demand by 1 to keep the total
+     * outstanding demand accurate.
+     *
+     * @param predicate - Synchronous test applied to each item.
+     * @returns A filtered `Flux<T>`.
+     *
+     * @example
+     * ```typescript
+     * Flux.just(1, 2, 3, 4).filter(n => n % 2 === 0).subscribe(v => console.log(v));
+     * // 2  4
+     * ```
+     */
+    public filter(predicate: (value: T) => boolean): Flux<T> {
+        return new Flux<T>({
+            subscribe: (subscriber: Subscriber<T>): Subscription => {
+                let sourceSub!: Subscription;
+                const sub = this.source.subscribe({
+                    onSubscribe(s) { sourceSub = s; },
+                    onNext(v) {
+                        try {
+                            if (predicate(v)) subscriber.onNext(v);
+                            else sourceSub.request(1); // replenish: item skipped
+                        } catch (e) { subscriber.onError(e instanceof Error ? e : new Error(String(e))); }
+                    },
+                    onError(e) { subscriber.onError(e); },
+                    onComplete() { subscriber.onComplete(); }
+                });
+                subscriber.onSubscribe(sub);
+                return sub;
+            }
+        });
+    }
+
+    /**
+     * Asynchronous filter: for each item, subscribes to `predicate(item)` and forwards
+     * the item downstream only if the predicate publisher emits `true`.
+     *
+     * Implemented via {@link concatMap} — predicates run sequentially.
+     *
+     * @param predicate - Returns a `Publisher<boolean>` for each item.
+     * @returns A filtered `Flux<T>`.
+     */
+    public filterWhen(predicate: (value: T) => Publisher<boolean>): Flux<T> {
+        return this.concatMap(v =>
+            Flux.from(predicate(v))
+                .filter(pass => pass)
+                .map(() => v)
+        );
+    }
+
+    /**
+     * Unsafe type cast — changes the declared element type to `R` without any
+     * runtime conversion.  Use only when you are certain the actual runtime
+     * type is compatible.
+     *
+     * @typeParam R - The target element type.
+     * @returns This `Flux` re-typed as `Flux<R>`.
+     */
+    public cast<R>(): Flux<R> { return new Flux<R>(this.source as unknown as Publisher<R>); }
+
+    /**
+     * Emits at most `n` items, then cancels the upstream subscription and completes.
+     *
+     * If `n ≤ 0`, returns an empty `Flux` immediately.
+     *
+     * @param n - Maximum number of items to emit.
+     * @returns A bounded `Flux<T>`.
+     */
+    public take(n: number): Flux<T> {
+        if (n <= 0) return Flux.empty<T>();
+        return new Flux<T>({
+            subscribe: (subscriber: Subscriber<T>): Subscription => {
+                let sourceSub!: Subscription;
+                let count = 0;
+                let done = false;
+
+                const operatorSub: Subscription = {
+                    request(r: number) { if (!done) sourceSub?.request(r); },
+                    unsubscribe() { done = true; sourceSub?.unsubscribe(); }
+                };
+
+                this.source.subscribe({
+                    onSubscribe(s: Subscription) {
+                        sourceSub = s;
+                        subscriber.onSubscribe(operatorSub);
+                    },
+                    onNext(v: T) {
+                        if (done) return;
+                        subscriber.onNext(v);
+                        if (++count >= n) {
+                            done = true;
+                            sourceSub.unsubscribe();
+                            subscriber.onComplete();
+                        }
+                    },
+                    onError(e: Error) { if (!done) subscriber.onError(e); },
+                    onComplete() { if (!done) subscriber.onComplete(); }
+                });
+
+                return operatorSub;
+            }
+        });
+    }
+
+    /**
+     * Emits items while `predicate(item)` returns `true`.
+     * Completes (and cancels upstream) on the first item for which it returns `false`.
+     *
+     * @param predicate - Tested synchronously for each item.
+     * @returns A `Flux<T>` that stops on the first `false`.
+     */
+    public takeWhile(predicate: (value: T) => boolean): Flux<T> {
+        return new Flux<T>({
+            subscribe: (subscriber: Subscriber<T>): Subscription => {
+                let sourceSub!: Subscription;
+                let done = false;
+
+                const operatorSub: Subscription = {
+                    request(n: number) { if (!done) sourceSub?.request(n); },
+                    unsubscribe() { done = true; sourceSub?.unsubscribe(); }
+                };
+
+                this.source.subscribe({
+                    onSubscribe(s: Subscription) {
+                        sourceSub = s;
+                        subscriber.onSubscribe(operatorSub);
+                    },
+                    onNext(v: T) {
+                        if (done) return;
+                        try {
+                            if (predicate(v)) {
+                                subscriber.onNext(v);
+                            } else {
+                                done = true;
+                                sourceSub.unsubscribe();
+                                subscriber.onComplete();
+                            }
+                        } catch (e) {
+                            done = true;
+                            subscriber.onError(e instanceof Error ? e : new Error(String(e)));
+                        }
+                    },
+                    onError(e: Error) { if (!done) subscriber.onError(e); },
+                    onComplete() { if (!done) subscriber.onComplete(); }
+                });
+
+                return operatorSub;
+            }
+        });
+    }
+
+    /**
+     * Forwards items from this `Flux` until `trigger` emits its first item (or completes),
+     * then cancels the source and completes downstream.
+     *
+     * If `trigger` signals an error, that error is forwarded to the subscriber.
+     *
+     * @param trigger - A `Publisher` whose first emission ends this stream.
+     * @returns A `Flux<T>` that stops when the trigger fires.
+     */
+    public takeUntilOther(trigger: Publisher<unknown>): Flux<T> {
+        return new Flux<T>({
+            subscribe: (subscriber: Subscriber<T>): Subscription => {
+                let sourceSub!: Subscription;
+                let triggerSub: Subscription;
+                let done = false;
+
+                const operatorSub: Subscription = {
+                    request(n: number) { if (!done) sourceSub?.request(n); },
+                    unsubscribe() { done = true; sourceSub?.unsubscribe(); triggerSub?.unsubscribe(); }
+                };
+
+                triggerSub = trigger.subscribe({
+                    onSubscribe(s) { triggerSub = s; s.request(1); },
+                    onNext(_v) {
+                        if (done) return;
+                        done = true;
+                        sourceSub?.unsubscribe();
+                        subscriber.onComplete();
+                    },
+                    onError(e) { if (!done) { done = true; subscriber.onError(e); } },
+                    onComplete() {}
+                });
+
+                this.source.subscribe({
+                    onSubscribe(s: Subscription) {
+                        sourceSub = s;
+                        subscriber.onSubscribe(operatorSub);
+                    },
+                    onNext(v: T) { if (!done) subscriber.onNext(v); },
+                    onError(e: Error) { if (!done) subscriber.onError(e); },
+                    onComplete() { if (!done) { done = true; triggerSub?.unsubscribe(); subscriber.onComplete(); } }
+                });
+
+                return operatorSub;
+            }
+        });
+    }
+
+    /** Emit defaultValue if source completes without emitting any item. */
+    /**
+     * Emits `value` if the source completes without having emitted any items,
+     * then completes.  If the source does emit items, they pass through unchanged.
+     *
+     * @param value - Fallback item to emit when the source is empty.
+     * @returns A `Flux<T>` that is never empty.
+     */
+    public defaultIfEmpty(value: T): Flux<T> {
+        return new Flux<T>({
+            subscribe: (subscriber: Subscriber<T>): Subscription => {
+                let hasValue = false;
+                const sub = this.source.subscribe({
+                    onSubscribe(_s) {},
+                    onNext(v) { hasValue = true; subscriber.onNext(v); },
+                    onError(e) { subscriber.onError(e); },
+                    onComplete() {
+                        if (!hasValue) subscriber.onNext(value);
+                        subscriber.onComplete();
+                    }
+                });
+                subscriber.onSubscribe(sub);
+                return sub;
+            }
+        });
+    }
+
+    /**
+     * Re-subscribes to the source on `onError`, up to `maxRetries` times.
+     *
+     * Accumulated downstream demand from previous attempts is preserved across retries.
+     * If the error persists after all retries are exhausted, it is forwarded to downstream.
+     *
+     * @param maxRetries - Maximum number of retry attempts (default: `Number.MAX_SAFE_INTEGER`).
+     * @returns A `Flux<T>` with automatic retry on error.
+     */
+    public retry(maxRetries: number = Number.MAX_SAFE_INTEGER): Flux<T> {
+        return new Flux<T>({
+            subscribe: (subscriber: Subscriber<T>): Subscription => {
+                let currentSub: Subscription = { request() {}, unsubscribe() {} };
+                let demand = 0;
+                let cancelled = false;
+                let retries = 0;
+                // Generation counter prevents stale onSubscribe callbacks (from earlier failed
+                // attempts) from overwriting currentSub after recursive attempt() calls return.
+                let generation = 0;
+
+                const operatorSub: Subscription = {
+                    request(n: number) {
+                        if (cancelled) return;
+                        if (n <= 0) { subscriber.onError(new Error(`request must be > 0, but was ${n}`)); return; }
+                        demand = Math.min(demand + n, Number.MAX_SAFE_INTEGER);
+                        currentSub.request(n);
+                    },
+                    unsubscribe() { cancelled = true; currentSub.unsubscribe(); }
+                };
+
+                const attempt = () => {
+                    const myGen = ++generation;
+                    this.source.subscribe({
+                        onSubscribe(s: Subscription) {
+                            // Only accept if this is still the active attempt
+                            if (myGen !== generation) { s.unsubscribe(); return; }
+                            currentSub = s;
+                            if (demand > 0) s.request(demand);
+                        },
+                        onNext(v: T) { if (!cancelled && myGen === generation) subscriber.onNext(v); },
+                        onError(e: Error) {
+                            if (cancelled || myGen !== generation) return;
+                            if (retries < maxRetries) { retries++; attempt(); }
+                            else subscriber.onError(e);
+                        },
+                        onComplete() { if (!cancelled && myGen === generation) subscriber.onComplete(); }
+                    });
+                };
+
+                subscriber.onSubscribe(operatorSub);
+                attempt();
+
+                return operatorSub;
+            }
+        });
+    }
+
+    // ──────────────────── Scan / Zip ────────────────────────────────
+
+    /**
+     * Emits a running accumulation of the stream.
+     *
+     * The first item is emitted as-is and becomes the initial accumulator.
+     * Each subsequent item is combined with the running accumulator using `reducer`,
+     * and the result is emitted downstream.
+     *
+     * @param reducer - Combines the running accumulator with the next item.
+     * @returns A `Flux<T>` of intermediate accumulation results.
+     *
+     * @example
+     * ```typescript
+     * Flux.just(1, 2, 3, 4).scan((acc, n) => acc + n).subscribe(v => console.log(v));
+     * // 1  3  6  10
+     * ```
+     */
+    public scan(reducer: (acc: T, next: T) => T): Flux<T> {
+        return new Flux<T>({
+            subscribe: (subscriber: Subscriber<T>): Subscription => {
+                let acc: T | undefined;
+                let hasAcc = false;
+                const sub = this.source.subscribe({
+                    onSubscribe(_s) {},
+                    onNext(v) {
+                        acc = hasAcc ? reducer(acc as T, v) : v;
+                        hasAcc = true;
+                        subscriber.onNext(acc);
+                    },
+                    onError(e) { subscriber.onError(e); },
+                    onComplete() { subscriber.onComplete(); }
+                });
+                subscriber.onSubscribe(sub);
+                return sub;
+            }
+        });
+    }
+
+    /**
+     * Emits a running accumulation of the stream with an explicit seed value.
+     *
+     * `seedFactory` is called once per subscription to produce the initial accumulator.
+     * Each upstream item is folded into the accumulator and the intermediate result is
+     * emitted downstream.
+     *
+     * @param seedFactory - Called per subscription to produce the initial accumulator of type `A`.
+     * @param reducer - Combines the current accumulator with the next item.
+     * @returns A `Flux<A>` of intermediate accumulation results.
+     *
+     * @example
+     * ```typescript
+     * Flux.just(1, 2, 3).scanWith(() => 0, (acc, n) => acc + n).subscribe(v => console.log(v));
+     * // 1  3  6
+     * ```
+     */
+    public scanWith<A>(seedFactory: () => A, reducer: (acc: A, next: T) => A): Flux<A> {
+        return new Flux<A>({
+            subscribe: (subscriber: Subscriber<A>): Subscription => {
+                let acc = seedFactory();
+                const sub = this.source.subscribe({
+                    onSubscribe(_s) {},
+                    onNext(v) { acc = reducer(acc, v); subscriber.onNext(acc); },
+                    onError(e) { subscriber.onError(e); },
+                    onComplete() { subscriber.onComplete(); }
+                });
+                subscriber.onSubscribe(sub);
+                return sub;
+            }
+        });
+    }
+
+    /**
+     * Pair-wise combines items from this `Flux` and `other` using `combiner`.
+     *
+     * Items are matched by position: the first item from each source is combined, then the second, etc.
+     * The stream completes when either source completes. If either source errors, the error is forwarded.
+     *
+     * @param other - The second publisher to zip with.
+     * @param combiner - Combines one item from each source into a result item.
+     * @returns A `Flux<V>` of combined pairs.
+     *
+     * @example
+     * ```typescript
+     * Flux.just(1, 2, 3)
+     *   .zipWith(Flux.just('a', 'b', 'c'), (n, s) => `${n}${s}`)
+     *   .subscribe(v => console.log(v));
+     * // 1a  2b  3c
+     * ```
+     */
+    public zipWith<R, V>(other: Publisher<R>, combiner: (a: T, b: R) => V): Flux<V> {
+        return new Flux<V>({
+            subscribe: (subscriber: Subscriber<V>): Subscription => {
+                const leftQueue: T[] = [];
+                const rightQueue: R[] = [];
+                let leftDone = false;
+                let rightDone = false;
+                let cancelled = false;
+                let terminated = false;
+
+                let leftSub: Subscription = { request() {}, unsubscribe() {} };
+                let rightSub: Subscription = { request() {}, unsubscribe() {} };
+
+                const terminate = (err?: Error) => {
+                    if (terminated) return;
+                    terminated = true;
+                    leftSub.unsubscribe();
+                    rightSub.unsubscribe();
+                    if (err) subscriber.onError(err);
+                    else subscriber.onComplete();
+                };
+
+                const operatorSub: Subscription = {
+                    request(n: number) {
+                        if (cancelled || terminated) return;
+                        if (n <= 0) { terminate(new Error(`request must be > 0, but was ${n}`)); return; }
+                        leftSub.request(n);
+                        rightSub.request(n);
+                    },
+                    unsubscribe() { cancelled = true; leftSub.unsubscribe(); rightSub.unsubscribe(); }
+                };
+
+                const tryEmit = () => {
+                    while (leftQueue.length > 0 && rightQueue.length > 0) {
+                        if (cancelled || terminated) return;
+                        const l = leftQueue.shift()!;
+                        const r = rightQueue.shift()!;
+                        try { subscriber.onNext(combiner(l, r)); }
+                        catch (e) { terminate(e instanceof Error ? e : new Error(String(e))); return; }
+                    }
+                    if ((leftDone && leftQueue.length === 0) || (rightDone && rightQueue.length === 0)) {
+                        terminate();
+                    }
+                };
+
+                this.source.subscribe({
+                    onSubscribe(s: Subscription) {
+                        leftSub = s;
+                        subscriber.onSubscribe(operatorSub);
+                    },
+                    onNext(v: T) { if (!cancelled && !terminated) { leftQueue.push(v); tryEmit(); } },
+                    onError(e: Error) { terminate(e); },
+                    onComplete() { if (!cancelled && !terminated) { leftDone = true; tryEmit(); } }
+                });
+
+                rightSub = other.subscribe({
+                    onSubscribe(s: Subscription) { rightSub = s; },
+                    onNext(v: R) { if (!cancelled && !terminated) { rightQueue.push(v); tryEmit(); } },
+                    onError(e: Error) { terminate(e); },
+                    onComplete() { if (!cancelled && !terminated) { rightDone = true; tryEmit(); } }
+                });
+
+                return operatorSub;
+            }
+        });
+    }
+
+    // ──────────────────── Side effects ───────────────────────────────
+
+    /**
+     * Executes a side-effect function when the source completes normally.
+     *
+     * The function runs just before `onComplete` is forwarded to the downstream subscriber.
+     * Any exception thrown by `fn` is silently swallowed.
+     *
+     * @param fn - Side-effect to run on normal completion.
+     * @returns A `Flux<T>` with the side effect attached.
+     */
+    public doOnComplete(fn: () => void): Flux<T> {
+        return new Flux<T>({
+            subscribe: (subscriber: Subscriber<T>): Subscription => {
+                const sub = this.source.subscribe({
+                    onSubscribe(_s) {},
+                    onNext(v) { subscriber.onNext(v); },
+                    onError(e) { subscriber.onError(e); },
+                    onComplete() { try { fn(); } catch (_) {} subscriber.onComplete(); }
+                });
+                subscriber.onSubscribe(sub);
+                return sub;
+            }
+        });
+    }
+
+    /**
+     * Executes a side-effect function when the source terminates — either normally (`onComplete`)
+     * or with an error (`onError`).
+     *
+     * The function runs before the terminal signal is forwarded downstream.
+     * Any exception thrown by `fn` is silently swallowed.
+     *
+     * @param fn - Side-effect to run on any terminal signal.
+     * @returns A `Flux<T>` with the side effect attached.
+     */
+    public doOnTerminate(fn: () => void): Flux<T> {
+        return new Flux<T>({
+            subscribe: (subscriber: Subscriber<T>): Subscription => {
+                const sub = this.source.subscribe({
+                    onSubscribe(_s) {},
+                    onNext(v) { subscriber.onNext(v); },
+                    onError(e) { try { fn(); } catch (_) {} subscriber.onError(e); },
+                    onComplete() { try { fn(); } catch (_) {} subscriber.onComplete(); }
+                });
+                subscriber.onSubscribe(sub);
+                return sub;
+            }
+        });
+    }
+
+    /**
+     * Executes a side-effect function when the downstream subscriber cancels
+     * (calls `unsubscribe()`).
+     *
+     * Any exception thrown by `fn` is silently swallowed.
+     *
+     * @param fn - Side-effect to run on cancellation.
+     * @returns A `Flux<T>` with the side effect attached.
+     */
+    public doOnCancel(fn: () => void): Flux<T> {
+        return new Flux<T>({
+            subscribe: (subscriber: Subscriber<T>): Subscription => {
+                const inner = this.source.subscribe({
+                    onSubscribe(_s) {},
+                    onNext(v) { subscriber.onNext(v); },
+                    onError(e) { subscriber.onError(e); },
+                    onComplete() { subscriber.onComplete(); }
+                });
+                const sub: Subscription = {
+                    request(n) { inner.request(n); },
+                    unsubscribe() { try { fn(); } catch (_) {} inner.unsubscribe(); }
+                };
+                subscriber.onSubscribe(sub);
+                return sub;
+            }
+        });
+    }
+
+    /**
+     * Executes a side-effect function after the stream ends for **any** reason —
+     * normal completion, error, or cancellation.
+     *
+     * Any exception thrown by `fn` is silently swallowed.
+     *
+     * @param fn - Side-effect to run after any terminal event or cancellation.
+     * @returns A `Flux<T>` with the side effect attached.
+     */
+    public doFinally(fn: () => void): Flux<T> {
+        return new Flux<T>({
+            subscribe: (subscriber: Subscriber<T>): Subscription => {
+                const inner = this.source.subscribe({
+                    onSubscribe(_s) {},
+                    onNext(v) { subscriber.onNext(v); },
+                    onError(e) { try { fn(); } catch (_) {} subscriber.onError(e); },
+                    onComplete() { try { fn(); } catch (_) {} subscriber.onComplete(); }
+                });
+                const sub: Subscription = {
+                    request(n) { inner.request(n); },
+                    unsubscribe() { try { fn(); } catch (_) {} inner.unsubscribe(); }
+                };
+                subscriber.onSubscribe(sub);
+                return sub;
+            }
+        });
+    }
+
+    // ──────────────────── Scheduling ────────────────────────────────
+
+    /**
+     * Low-level escape hatch for bridging imperative push-based sources.
+     *
+     * The `producer` receives three callbacks and must call them to drive the stream.
+     * `onRequest` and `onUnsubscribe` let the caller respond to downstream demand and
+     * cancellation respectively.
+     *
+     * @param producer - Callback that receives `(onNext, onError, onComplete)` and drives the stream.
+     * @param onRequest - Called when the downstream subscriber requests `n` more items.
+     * @param onUnsubscribe - Called when the downstream subscriber cancels.
+     * @returns A `Flux<R>` backed by the imperative producer.
+     */
+    public pipe<R>(
+        producer: (onNext: (value: R) => void, onError: (error: Error) => void, onComplete: () => void) => void,
+        onRequest: (request: number) => void,
+        onUnsubscribe: () => void
+    ): Flux<R> {
+        return new Flux<R>({
+            subscribe: (subscriber: Subscriber<R>): Subscription => {
+                producer(v => subscriber.onNext(v), e => subscriber.onError(e), () => subscriber.onComplete());
+                const sub = { request: onRequest, unsubscribe: onUnsubscribe };
+                subscriber.onSubscribe(sub);
+                return sub;
+            }
+        });
+    }
+
+    // ──────────────────── Flux-specific operators ────────────────────────
+
+    /**
+     * Returns the first item of this `Flux` as a `Mono`.
+     *
+     * If the source is empty, the resulting `Mono` completes without emitting a value.
+     * The source subscription is cancelled immediately after the first item is received.
+     *
+     * @returns A `Mono<T>` that emits the first item, or completes empty.
+     */
+    public first(): Mono<T> {
+        return Mono.generate<T>(sink => {
+            const sub = this.source.subscribe({
+                onSubscribe(_s) {},
+                onNext(v) { sub.unsubscribe(); sink.next(v); },
+                onError(e) { sink.error(e); },
+                onComplete() { sink.complete(); }
+            });
+            sub.request(1);
+        });
+    }
+
+    /**
+     * Returns the last item of this `Flux` as a `Mono`.
+     *
+     * The source is fully consumed before the value is emitted.
+     * If the source is empty, the resulting `Mono` completes without emitting a value.
+     *
+     * @returns A `Mono<T>` that emits the last item, or completes empty.
+     */
+    public last(): Mono<T> {
+        return Mono.generate<T>(sink => {
+            let last: T | undefined;
+            let hasValue = false;
+            const sub = this.source.subscribe({
+                onSubscribe(_s) {},
+                onNext(v) { last = v; hasValue = true; },
+                onError(e) { sink.error(e); },
+                onComplete() {
+                    if (hasValue) sink.next(last as T);
+                    else sink.complete();
+                }
+            });
+            sub.request(Number.MAX_SAFE_INTEGER);
+        });
+    }
+
+    /**
+     * Counts all items emitted by this `Flux` and emits the total as a `Mono<number>`.
+     *
+     * The source is fully consumed before the count is emitted.
+     *
+     * @returns A `Mono<number>` emitting the number of items.
+     */
+    public count(): Mono<number> {
+        return Mono.generate<number>(sink => {
+            let n = 0;
+            const sub = this.source.subscribe({
+                onSubscribe(_s) {},
+                onNext(_v) { n++; },
+                onError(e) { sink.error(e); },
+                onComplete() { sink.next(n); }
+            });
+            sub.request(Number.MAX_SAFE_INTEGER);
+        });
+    }
+
+    /**
+     * Emits `true` if this `Flux` emits at least one item, `false` if it completes empty.
+     *
+     * The source subscription is cancelled as soon as the first item is observed.
+     *
+     * @returns A `Mono<boolean>`.
+     */
+    public hasElements(): Mono<boolean> {
+        return Mono.generate<boolean>(sink => {
+            const sub = this.source.subscribe({
+                onSubscribe(_s) {},
+                onNext(_v) { sub.unsubscribe(); sink.next(true); },
+                onError(e) { sink.error(e); },
+                onComplete() { sink.next(false); }
+            });
+            sub.request(1);
+        });
+    }
+
+    /**
+     * Emits `true` if any item matches `predicate`, `false` if none do.
+     *
+     * Short-circuits: cancels the source and emits `true` on the first matching item.
+     * If `predicate` throws, the error is forwarded to the subscriber.
+     *
+     * @param predicate - Test applied to each item.
+     * @returns A `Mono<boolean>`.
+     */
+    public any(predicate: (value: T) => boolean): Mono<boolean> {
+        return Mono.generate<boolean>(sink => {
+            const sub = this.source.subscribe({
+                onSubscribe(_s) {},
+                onNext(v) {
+                    try {
+                        if (predicate(v)) { sub.unsubscribe(); sink.next(true); }
+                    } catch (e) { sink.error(e instanceof Error ? e : new Error(String(e))); }
+                },
+                onError(e) { sink.error(e); },
+                onComplete() { sink.next(false); }
+            });
+            sub.request(Number.MAX_SAFE_INTEGER);
+        });
+    }
+
+    /**
+     * Emits `true` if every item matches `predicate`, `false` if any item does not.
+     *
+     * Short-circuits: cancels the source and emits `false` on the first non-matching item.
+     * If `predicate` throws, the error is forwarded to the subscriber.
+     *
+     * @param predicate - Test applied to each item.
+     * @returns A `Mono<boolean>`.
+     */
+    public all(predicate: (value: T) => boolean): Mono<boolean> {
+        return Mono.generate<boolean>(sink => {
+            const sub = this.source.subscribe({
+                onSubscribe(_s) {},
+                onNext(v) {
+                    try {
+                        if (!predicate(v)) { sub.unsubscribe(); sink.next(false); }
+                    } catch (e) { sink.error(e instanceof Error ? e : new Error(String(e))); }
+                },
+                onError(e) { sink.error(e); },
+                onComplete() { sink.next(true); }
+            });
+            sub.request(Number.MAX_SAFE_INTEGER);
+        });
+    }
+
+    /**
+     * Emits `true` if no item matches `predicate`, `false` if any item does.
+     *
+     * This is the logical negation of {@link any}.
+     *
+     * @param predicate - Test applied to each item.
+     * @returns A `Mono<boolean>`.
+     */
+    public none(predicate: (value: T) => boolean): Mono<boolean> {
+        return this.any(predicate).map(v => !v);
+    }
+
+    /**
+     * Returns the item at zero-based `index` as a `Mono<T>`.
+     *
+     * If the source completes before reaching `index`, emits `defaultValue` if provided,
+     * otherwise completes empty.
+     *
+     * @param index - Zero-based position of the desired item.
+     * @param defaultValue - Optional fallback value emitted if the index is out of range.
+     * @returns A `Mono<T>`.
+     */
+    public elementAt(index: number, defaultValue?: T): Mono<T> {
+        return Mono.generate<T>(sink => {
+            let i = 0;
+            const sub = this.source.subscribe({
+                onSubscribe(_s) {},
+                onNext(v) {
+                    if (i++ === index) { sub.unsubscribe(); sink.next(v); }
+                },
+                onError(e) { sink.error(e); },
+                onComplete() {
+                    if (defaultValue !== undefined) sink.next(defaultValue);
+                    else sink.complete();
+                }
+            });
+            sub.request(Number.MAX_SAFE_INTEGER);
+        });
+    }
+
+    /**
+     * Collects all items into an array and emits the complete array as a `Mono<T[]>`.
+     *
+     * The source is fully consumed before the array is emitted.
+     *
+     * @returns A `Mono<T[]>` containing all emitted items.
+     */
+    public collect(_force: boolean = false): Mono<T[]> {
+        return Mono.generate<T[]>(sink => {
+            const items: T[] = [];
+            const sub = this.source.subscribe({
+                onSubscribe(_s) {},
+                onNext(v) { items.push(v); },
+                onError(e) { sink.error(e); },
+                onComplete() { sink.next(items); }
+            });
+            sub.request(Number.MAX_SAFE_INTEGER);
+        });
+    }
+
+    /**
+     * Alias for {@link collect}.
+     *
+     * @returns A `Mono<T[]>` containing all emitted items.
+     */
+    public collectList(): Mono<T[]> {
+        return this.collect();
+    }
+
+    /**
+     * Collects all items, sorts them, and re-emits them as a `Flux<T>`.
+     *
+     * Uses the native `Array.sort` algorithm. When no `comparator` is provided the
+     * default lexicographic sort order is used.
+     *
+     * @param comparator - Optional comparison function (same signature as `Array.sort`).
+     * @returns A `Flux<T>` that emits items in sorted order after the source completes.
+     */
+    public sort(comparator?: (a: T, b: T) => number): Flux<T> {
+        return Flux.defer(() =>
+            Flux.from(this.collect().map(arr => {
+                arr.sort(comparator);
+                return arr;
+            }).flatMapMany(arr => Flux.fromIterable(arr)))
+        );
+    }
+
+    /**
+     * Collects items into fixed-size arrays and emits each batch as a `T[]`.
+     *
+     * A batch is emitted as soon as it reaches `maxSize` items.
+     * The final (potentially partial) batch is emitted when the source completes.
+     *
+     * @param maxSize - Maximum number of items per batch.
+     * @returns A `Flux<T[]>` of item batches.
+     *
+     * @example
+     * ```typescript
+     * Flux.range(1, 5).buffer(2).subscribe(v => console.log(v));
+     * // [1, 2]  [3, 4]  [5]
+     * ```
+     */
+    public buffer(maxSize: number): Flux<T[]> {
+        return new Flux<T[]>({
+            subscribe: (subscriber: Subscriber<T[]>): Subscription => {
+                let batch: T[] = [];
+                const sub = this.source.subscribe({
+                    onSubscribe(_s) {},
+                    onNext(v) {
+                        batch.push(v);
+                        if (batch.length >= maxSize) {
+                            subscriber.onNext(batch);
+                            batch = [];
+                        }
+                    },
+                    onError(e) { subscriber.onError(e); },
+                    onComplete() {
+                        if (batch.length > 0) subscriber.onNext(batch);
+                        subscriber.onComplete();
+                    }
+                });
+                subscriber.onSubscribe(sub);
+                return sub;
+            }
+        });
+    }
+
+    /**
+     * Caches all emitted items and replays them to each new subscriber.
+     *
+     * The source is subscribed to on the **first** downstream subscription (lazy connect).
+     * Subsequent subscribers receive a replay of all previously emitted items from the cache.
+     *
+     * @returns A cached, replayable `Flux<T>`.
+     */
+    public cache(): Flux<T> {
+        const sink = new ReplayAllSink<T>();
+        let connected = false;
+
+        return new Flux<T>({
+            subscribe: (subscriber: Subscriber<T>): Subscription => {
+                if (!connected) {
+                    connected = true;
+                    this.source.subscribe({
+                        onSubscribe(s) { s.request(Number.MAX_SAFE_INTEGER); },
+                        onNext(v) { sink.next(v); },
+                        onError(e) { sink.error(e); },
+                        onComplete() { sink.complete(); }
+                    });
+                }
+                return sink.subscribe(subscriber);
+            }
+        });
+    }
+
+    /**
+     * Pairs each item with its zero-based index, emitting `[index, item]` tuples.
+     *
+     * @returns A `Flux<[number, T]>` where the first element is the zero-based index.
+     *
+     * @example
+     * ```typescript
+     * Flux.just('a', 'b', 'c').indexed().subscribe(([i, v]) => console.log(i, v));
+     * // 0 a  1 b  2 c
+     * ```
+     */
+    public indexed(): Flux<[number, T]> {
+        return new Flux<[number, T]>({
+            subscribe: (subscriber: Subscriber<[number, T]>): Subscription => {
+                let index = 0;
+                const sub = this.source.subscribe({
+                    onSubscribe(_s) {},
+                    onNext(v) { subscriber.onNext([index++, v]); },
+                    onError(e) { subscriber.onError(e); },
+                    onComplete() { subscriber.onComplete(); }
+                });
+                subscriber.onSubscribe(sub);
+                return sub;
+            }
+        });
+    }
+
+    /**
+     * Skips the first `n` items from the source, then forwards the rest.
+     *
+     * Skipped items replenish upstream demand so the overall demand accounting stays correct.
+     *
+     * @param n - Number of leading items to skip.
+     * @returns A `Flux<T>` without the first `n` items.
+     */
+    public skip(n: number): Flux<T> {
+        return new Flux<T>({
+            subscribe: (subscriber: Subscriber<T>): Subscription => {
+                let skipped = 0;
+                let sourceSub!: Subscription;
+                const sub = this.source.subscribe({
+                    onSubscribe(s) { sourceSub = s; },
+                    onNext(v) {
+                        if (skipped++ < n) sourceSub.request(1); // replenish: item skipped
+                        else subscriber.onNext(v);
+                    },
+                    onError(e) { subscriber.onError(e); },
+                    onComplete() { subscriber.onComplete(); }
+                });
+                subscriber.onSubscribe(sub);
+                return sub;
+            }
+        });
+    }
+
+    /**
+     * Skips items while `predicate` returns `true`, then forwards all subsequent items
+     * regardless of the predicate.
+     *
+     * Skipped items replenish upstream demand. Once the predicate returns `false`, it is
+     * never evaluated again.
+     *
+     * @param predicate - Tested against each item until it returns `false`.
+     * @returns A `Flux<T>` that starts forwarding items after the first predicate failure.
+     */
+    public skipWhile(predicate: (value: T) => boolean): Flux<T> {
+        return new Flux<T>({
+            subscribe: (subscriber: Subscriber<T>): Subscription => {
+                let skipping = true;
+                let sourceSub!: Subscription;
+                const sub = this.source.subscribe({
+                    onSubscribe(s) { sourceSub = s; },
+                    onNext(v) {
+                        if (skipping && predicate(v)) { sourceSub.request(1); return; }
+                        skipping = false;
+                        subscriber.onNext(v);
+                    },
+                    onError(e) { subscriber.onError(e); },
+                    onComplete() { subscriber.onComplete(); }
+                });
+                subscriber.onSubscribe(sub);
+                return sub;
+            }
+        });
+    }
+
+    /**
+     * Gates items from this `Flux` until `other` emits its first item.
+     *
+     * Items arriving before the gate opens are silently dropped (demand is replenished).
+     * If `other` signals an error, the error is forwarded to downstream.
+     *
+     * @param other - A `Publisher` whose first emission opens the gate.
+     * @returns A `Flux<T>` that starts forwarding items once `other` emits.
+     */
+    public skipUntil(other: Publisher<unknown>): Flux<T> {
+        return new Flux<T>({
+            subscribe: (subscriber: Subscriber<T>): Subscription => {
+                let gating = true;
+                let primarySub: Subscription;
+                const triggerSub = other.subscribe({
+                    onSubscribe(_s) {},
+                    onNext(_v) { gating = false; triggerSub.unsubscribe(); },
+                    onError(e) { subscriber.onError(e); },
+                    onComplete() {}
+                });
+                triggerSub.request(1);
+                primarySub = this.source.subscribe({
+                    onSubscribe(_s) {},
+                    onNext(v) { if (!gating) subscriber.onNext(v); else primarySub.request(1); },
+                    onError(e) { subscriber.onError(e); },
+                    onComplete() { subscriber.onComplete(); }
+                });
+                subscriber.onSubscribe({
+                    request(n) { primarySub.request(n); },
+                    unsubscribe() { primarySub.unsubscribe(); triggerSub.unsubscribe(); }
+                });
+                return { request(n) { primarySub.request(n); }, unsubscribe() { primarySub.unsubscribe(); triggerSub.unsubscribe(); } };
+            }
+        });
+    }
+
+    /**
+     * Filters out duplicate items, forwarding only items not seen before.
+     *
+     * Uses a `Set` with reference equality (`===`) to track seen values.
+     * Duplicates replenish upstream demand.
+     *
+     * @returns A `Flux<T>` with all duplicate items removed.
+     */
+    public distinct(): Flux<T> {
+        return new Flux<T>({
+            subscribe: (subscriber: Subscriber<T>): Subscription => {
+                const seen = new Set<T>();
+                let sourceSub!: Subscription;
+                const sub = this.source.subscribe({
+                    onSubscribe(s) { sourceSub = s; },
+                    onNext(v) { if (!seen.has(v)) { seen.add(v); subscriber.onNext(v); } else sourceSub.request(1); },
+                    onError(e) { subscriber.onError(e); },
+                    onComplete() { subscriber.onComplete(); }
+                });
+                subscriber.onSubscribe(sub);
+                return sub;
+            }
+        });
+    }
+
+    /**
+     * Suppresses consecutive duplicate items.
+     *
+     * An item is forwarded only when it is different from the immediately preceding item
+     * as determined by `comparator`. The default comparator uses `!==`.
+     * Suppressed items replenish upstream demand.
+     *
+     * @param comparator - Returns `true` when two consecutive items are considered different
+     *                     (default: `(a, b) => a !== b`).
+     * @returns A `Flux<T>` without consecutive duplicates.
+     *
+     * @example
+     * ```typescript
+     * Flux.just(1, 1, 2, 2, 3).distinctUntilChanged().subscribe(v => console.log(v));
+     * // 1  2  3
+     * ```
+     */
+    public distinctUntilChanged(comparator: (a: T, b: T) => boolean = (a, b) => a !== b): Flux<T> {
+        return new Flux<T>({
+            subscribe: (subscriber: Subscriber<T>): Subscription => {
+                let prev: T | undefined;
+                let first = true;
+                let sourceSub!: Subscription;
+                const sub = this.source.subscribe({
+                    onSubscribe(s) { sourceSub = s; },
+                    onNext(v) {
+                        if (first || comparator(prev as T, v)) {
+                            first = false;
+                            prev = v;
+                            subscriber.onNext(v);
+                        } else sourceSub.request(1);
+                    },
+                    onError(e) { subscriber.onError(e); },
+                    onComplete() { subscriber.onComplete(); }
+                });
+                subscriber.onSubscribe(sub);
+                return sub;
+            }
+        });
+    }
+
+    /**
+     * Delays the delivery of each item by `ms` milliseconds using the delay scheduler.
+     *
+     * The source is subscribed to at full speed; each emitted item is individually
+     * scheduled for delivery after the specified delay.
+     *
+     * @param ms - Delay in milliseconds applied to each item.
+     * @returns A `Flux<T>` with delayed item delivery.
+     */
+    public delayElements(ms: number): Flux<T> {
+        return new Flux<T>({
+            subscribe: (subscriber: Subscriber<T>): Subscription => {
+                const sub = this.source.subscribe({
+                    onSubscribe(_s) {},
+                    onNext(v) { Schedulers.delay(ms).schedule(() => subscriber.onNext(v)); },
+                    onError(e) { subscriber.onError(e); },
+                    onComplete() { subscriber.onComplete(); }
+                });
+                subscriber.onSubscribe(sub);
+                return sub;
+            }
+        });
+    }
+
+    /**
+     * Appends `other` to this `Flux`, subscribing to `other` only after this source completes.
+     *
+     * Items from this source are emitted first, in order.  Once this source completes,
+     * items from `other` are emitted.  If either source errors, the error is forwarded
+     * and `other` is not subscribed to.
+     *
+     * @param other - The publisher to concatenate after this source.
+     * @returns A `Flux<T>` that emits items from both sources sequentially.
+     */
+    public concatWith(other: Publisher<T>): Flux<T> {
+        return new Flux<T>({
+            subscribe: (subscriber: Subscriber<T>): Subscription => {
+                let primarySub: Subscription = { request() {}, unsubscribe() {} };
+                let otherSub: Subscription | null = null;
+                let cancelled = false;
+                let demand = 0;
+
+                const operatorSub: Subscription = {
+                    request(n) {
+                        if (cancelled) return;
+                        if (n <= 0) { subscriber.onError(new Error(`request must be > 0, but was ${n}`)); return; }
+                        demand = Math.min(demand + n, Number.MAX_SAFE_INTEGER);
+                        if (otherSub) otherSub.request(n); else primarySub.request(n);
+                    },
+                    unsubscribe() { cancelled = true; primarySub.unsubscribe(); otherSub?.unsubscribe(); }
+                };
+
+                this.source.subscribe({
+                    onSubscribe(sourceSub: Subscription) {
+                        primarySub = sourceSub;
+                        subscriber.onSubscribe(operatorSub);
+                    },
+                    onNext(v) { subscriber.onNext(v); },
+                    onError(e) { subscriber.onError(e); },
+                    onComplete() {
+                        if (cancelled) return;
+                        otherSub = other.subscribe({
+                            onSubscribe(otherSourceSub: Subscription) {
+                                otherSub = otherSourceSub;
+                                if (demand > 0) otherSub.request(demand);
+                            },
+                            onNext(v) { subscriber.onNext(v); },
+                            onError(e) { subscriber.onError(e); },
+                            onComplete() { subscriber.onComplete(); }
+                        });
+                    }
+                });
+
+                return operatorSub;
+            }
+        });
+    }
+
+    /**
+     * Merges this `Flux` with `other`, subscribing to both concurrently.
+     *
+     * Items from both sources are interleaved as they arrive. The resulting stream
+     * completes when **both** sources complete. Any error from either source terminates
+     * the merged stream immediately.
+     *
+     * @param other - The publisher to merge with this source.
+     * @returns A `Flux<T>` that emits items from both sources concurrently.
+     */
+    public mergeWith(other: Publisher<T>): Flux<T> {
+        return new Flux<T>({
+            subscribe: (subscriber: Subscriber<T>): Subscription => {
+                let doneCount = 0;
+                let cancelled = false;
+                let terminated = false;
+
+                let primarySub: Subscription = { request() {}, unsubscribe() {} };
+                let otherSubRef: Subscription = { request() {}, unsubscribe() {} };
+
+                const terminate = (err?: Error) => {
+                    if (terminated) return;
+                    terminated = true;
+                    primarySub.unsubscribe();
+                    otherSubRef.unsubscribe();
+                    if (err) subscriber.onError(err);
+                    else subscriber.onComplete();
+                };
+
+                const done = () => { if (!terminated && ++doneCount === 2) terminate(); };
+
+                const operatorSub: Subscription = {
+                    request(n) {
+                        if (cancelled || terminated) return;
+                        if (n <= 0) { terminate(new Error(`request must be > 0, but was ${n}`)); return; }
+                        primarySub.request(n);
+                        otherSubRef.request(n);
+                    },
+                    unsubscribe() { cancelled = true; primarySub.unsubscribe(); otherSubRef.unsubscribe(); }
+                };
+
+                this.source.subscribe({
+                    onSubscribe(sourceSub: Subscription) {
+                        primarySub = sourceSub;
+                        subscriber.onSubscribe(operatorSub);
+                    },
+                    onNext(v) { if (!cancelled && !terminated) subscriber.onNext(v); },
+                    onError(e) { terminate(e); },
+                    onComplete() { done(); }
+                });
+
+                otherSubRef = other.subscribe({
+                    onSubscribe(_s) {},
+                    onNext(v) { if (!cancelled && !terminated) subscriber.onNext(v); },
+                    onError(e) { terminate(e); },
+                    onComplete() { done(); }
+                });
+
+                return operatorSub;
+            }
+        });
+    }
+
+    /**
+     * Reduces the stream to a single value using `reducer`, emitting the final result as a `Mono<T>`.
+     *
+     * The first item becomes the initial accumulator. If the source is empty, the resulting
+     * `Mono` completes without emitting a value.
+     *
+     * @param reducer - Combines the running accumulator with the next item.
+     * @returns A `Mono<T>` emitting the final reduced value.
+     *
+     * @example
+     * ```typescript
+     * Flux.just(1, 2, 3, 4).reduce((acc, n) => acc + n).subscribe(v => console.log(v));
+     * // 10
+     * ```
      */
     public reduce(reducer: (acc: T, next: T) => T): Mono<T> {
-        return this.collect().map(value => value.reduce(reducer))
+        return Mono.generate<T>(sink => {
+            let acc: T | undefined;
+            let hasValue = false;
+            const sub = this.source.subscribe({
+                onSubscribe(_s) {},
+                onNext(v) { acc = hasValue ? reducer(acc as T, v) : v; hasValue = true; },
+                onError(e) { sink.error(e); },
+                onComplete() {
+                    if (hasValue) sink.next(acc as T);
+                    else sink.complete();
+                }
+            });
+            sub.request(Number.MAX_SAFE_INTEGER);
+        });
     }
 
     /**
-     * Reduces the items emitted by this Flux using a given accumulator function and a seed value.
-     * Allows providing an initial seed for the accumulation.
+     * Reduces the stream to a single value of type `A`, using an explicit seed, and emits it as `Mono<A>`.
      *
-     * @template A - The type of the accumulated value.
-     * @param {Function} seedFactory - A function that provides the initial accumulated value.
-     * @param {Function} reducer - A function that combines the accumulated value and the next item.
-     * @returns {Mono<A>} A Mono that emits the final accumulated value.
+     * `seedFactory` is called once per subscription to produce the initial accumulator.
+     * Unlike {@link reduce}, this always emits a value even if the source is empty (the seed).
+     *
+     * @param seedFactory - Produces the initial accumulator value per subscription.
+     * @param reducer - Combines the running accumulator with the next item.
+     * @returns A `Mono<A>` emitting the final reduced value.
+     *
+     * @example
+     * ```typescript
+     * Flux.just(1, 2, 3)
+     *   .reduceWith(() => '', (acc, n) => acc + n)
+     *   .subscribe(v => console.log(v)); // '123'
+     * ```
      */
     public reduceWith<A>(seedFactory: () => A, reducer: (acc: A, next: T) => A): Mono<A> {
-        let pipeSub: Subscription
-        return this.pipe((onNext, onError, _) => {
-            let acc = seedFactory()
-            pipeSub = this.subscribe({
-                onNext(value: T): void {
-                    acc = reducer(acc, value)
-                },
-                onError,
-                onComplete(): void {
-                    onNext(acc)
-                }
-            })
-        }, _ => pipeSub?.request(Number.MAX_SAFE_INTEGER), () => pipeSub?.unsubscribe(), Mono as any) as unknown as Mono<A>
+        return Mono.generate<A>(sink => {
+            let acc = seedFactory();
+            const sub = this.source.subscribe({
+                onSubscribe(_s) {},
+                onNext(v) { acc = reducer(acc, v); },
+                onError(e) { sink.error(e); },
+                onComplete() { sink.next(acc); }
+            });
+            sub.request(Number.MAX_SAFE_INTEGER);
+        });
     }
 
     /**
-     * Returns a Mono that completes when the current Flux completes.
-     * Does not emit any value, just completes.
+     * Ignores all items from this `Flux` and emits a single `void` value on completion.
      *
-     * @returns {Mono<void>} A Mono that completes when the Flux completes.
+     * Useful when you care only about the completion signal, not about the emitted items.
+     * If the source errors, the error is forwarded.
+     *
+     * @returns A `Mono<void>` that signals when this `Flux` completes.
      */
     public then(): Mono<void> {
-        let pipeSub: Subscription
-        return this.pipe((_, onError, onComplete) => {
-            pipeSub = this.subscribe({
-                onNext(_: T): void {
-                },
-                onError,
-                onComplete
-            })
-        }, _ => pipeSub?.request(Number.MAX_SAFE_INTEGER), () => pipeSub?.unsubscribe(), Mono as any) as unknown as Mono<void>
+        return Mono.generate<void>(sink => {
+            const sub = this.source.subscribe({
+                onSubscribe(_s) {},
+                onNext(_v) {},
+                onError(e) { sink.error(e); },
+                onComplete() { sink.next(undefined); }
+            });
+            sub.request(Number.MAX_SAFE_INTEGER);
+        });
     }
 
     /**
-     * Returns a Mono that completes when the current Flux completes, and then triggers the completion of another Publisher.
+     * Ignores all items from this `Flux`, then subscribes to `other` after this source completes,
+     * draining `other` completely and returning a `Mono<void>`.
      *
-     * @param {Publisher<any>} other - Another Publisher to complete after the current Flux.
-     * @returns {Mono<void>} A Mono that completes after both Flux and the given Publisher complete.
+     * If this source or `other` errors, the error is forwarded.
+     *
+     * @param other - A `Publisher` to subscribe to after this source completes.
+     * @returns A `Mono<void>` that completes once `other` completes.
      */
-    public thenEmpty(other: Publisher<any>): Mono<void> {
-        return this.collect()
-            .flatMap(_ => other)
-            .flatMap(_ => Mono.empty())
-    }
-
-    /**
-     * Pipes the data through custom transformations.
-     * @template R - The result type after processing.
-     * @param {Function} producer - The function to produce new values.
-     * @param {Function} onRequest - Callback on request.
-     * @param {Function} onUnsubscribe - Callback on unsubscribe.
-     * @param constructor - Constructor for generating new Publisher
-     * @returns {Flux<R>} A new Flux with transformed data.
-     */
-    public override pipe<R>(producer: (onNext: (value: R) => void, onError: (error: Error) => void, onComplete: () => void) => void, onRequest?: (request: number) => void, onUnsubscribe?: () => void, constructor?: new (publisher: Publisher<R>) => AbstractPipePublisher<R>): Flux<R> {
-        return super.pipe(producer, onRequest, onUnsubscribe, constructor) as Flux<R>;
-    }
-
-    /**
-     * Transforms each emitted value using the given function.
-     * @template R - The transformed data type.
-     * @param {Function} fn - The mapping function.
-     * @returns {Flux<R>} A new Flux with mapped data.
-     */
-    public override map<R>(fn: (value: T) => R): Flux<R> {
-        return super.map(fn) as Flux<R>;
-    }
-
-    /**
-     * Transforms each emitted value and filter transform result.
-     * @template R - The transformed data type.
-     * @param {Function} fn - The mapping function that can return null or undefined.
-     * @returns {Flux<R>} A new Flux with mapped non-null data.
-     */
-    public override mapNotNull<R>(fn: (value: T) => (R | null | undefined)): Flux<R> {
-        return super.mapNotNull(fn) as Flux<R>;
-    }
-
-    /**
-     * Transforms the value using a function that returns a new publisher.
-     * @template R - The resulting data type.
-     * @param {Function} fn - The function to transform values into new publishers.
-     * @returns {Flux<R>} A Flux that flattens the result.
-     */
-    public override flatMap<R>(fn: (value: T) => Publisher<R>): Flux<R> {
-        return super.flatMap(fn) as Flux<R>;
-    }
-
-    /**
-     * Filters emitted values using a given predicate.
-     * @param {Function} predicate - The function to determine whether to emit a value.
-     * @returns {Flux<T>} A new Flux with filtered data.
-     */
-    public override filter(predicate: (value: T) => boolean): Flux<T> {
-        return super.filter(predicate) as Flux<T>;
-    }
-
-    /**
-     * Filters emitted values based on a publisher that returns a boolean.
-     * @param {Function} predicate - A function returning a boolean publisher.
-     * @returns {Flux<T>} A new Flux with conditional data.
-     */
-    public override filterWhen(predicate: (value: T) => Publisher<boolean>): Flux<T> {
-        return super.filterWhen(predicate) as Flux<T>;
-    }
-
-    /**
-     * Casts the current publisher to another type.
-     * @template R - The target type.
-     * @returns {Flux<R>} The casted Flux.
-     */
-    public override cast<R>(): Flux<R> {
-        return super.cast() as Flux<R>;
-    }
-
-    /**
-     * Switches to an alternative publisher if the current one is empty.
-     * @param {Publisher<T>} alternative - The alternative publisher.
-     * @returns {Flux<T>} A new Flux.
-     */
-    public override switchIfEmpty(alternative: Publisher<T>): Flux<T> {
-        return super.switchIfEmpty(alternative) as Flux<T>;
-    }
-
-    /**
-     * Continues with a replacement publisher if an error occurs.
-     * @param {Publisher<T>} replacement - The publisher to switch to on error.
-     * @returns {Flux<T>} A new Flux.
-     */
-    public override onErrorReturn(replacement: Publisher<T>): Flux<T> {
-        return super.onErrorReturn(replacement) as Flux<T>;
-    }
-
-    /**
-     * Continues processing even if an error occurs based on a predicate.
-     * @param {Function} predicate - Function to determine whether to continue on error.
-     * @returns {Flux<T>} A new Flux.
-     */
-    public override onErrorContinue(predicate: (error: Error) => boolean): Flux<T> {
-        return super.onErrorContinue(predicate) as Flux<T>;
-    }
-
-    /**
-     * Executes a function when the first value is emitted.
-     * @param {Function} fn - The function to execute.
-     * @returns {Flux<T>} A new Flux.
-     */
-    public override doFirst(fn: () => void): Flux<T> {
-        return super.doFirst(fn) as Flux<T>;
-    }
-
-    /**
-     * Executes a function when each value is emitted.
-     * @param {Function} fn - The function to execute on each value.
-     * @returns {Flux<T>} A new Flux.
-     */
-    public override doOnNext(fn: (value: T) => void): Flux<T> {
-        return super.doOnNext(fn) as Flux<T>;
-    }
-
-    /**
-     * Executes a function when each error is emitted.
-     * @param {Function} fn - The function to execute on each error.
-     * @returns {Flux<T>} A new Flux.
-     */
-    public override doOnError(fn: (value: Error) => void): Flux<T> {
-        return super.doOnError(fn) as Flux<T>;
-    }
-
-    /**
-     * Executes a function when the stream completes.
-     * @param {Function} fn - The function to execute on completion.
-     * @returns {Flux<T>} A new Flux.
-     */
-    public override doFinally(fn: () => void): Flux<T> {
-        return super.doFinally(fn) as Flux<T>;
-    }
-
-    /**
-     * Executes a function when a subscription occurs.
-     * @param {Function} fn - The function to execute on subscription.
-     * @returns {Flux<T>} A new Flux.
-     */
-    public override doOnSubscribe(fn: (subscription: Subscription) => void): Flux<T> {
-        return super.doOnSubscribe(fn) as Flux<T>;
-    }
-
-    /**
-     * Publishes values on a specified scheduler.
-     * @param {Scheduler} scheduler - The scheduler to use.
-     * @returns {Flux<T>} A new Flux.
-     */
-    public override publishOn(scheduler: Scheduler): Flux<T> {
-        return super.publishOn(scheduler) as Flux<T>;
-    }
-
-    /**
-     * Subscribes to the stream on a specified scheduler.
-     * @param {Scheduler} scheduler - The scheduler to use.
-     * @returns {Flux<T>} A new Flux.
-     */
-    public override subscribeOn(scheduler: Scheduler): Flux<T> {
-        return super.subscribeOn(scheduler) as Flux<T>;
-    }
-
-    protected createSink(): Sink<T> & Publisher<T> {
-        return new ManySink();
+    public thenEmpty(other: Publisher<unknown>): Mono<void> {
+        return this.then().flatMap(() => Mono.from<void>({
+            subscribe(subscriber: Subscriber<void>): Subscription {
+                const sub = other.subscribe({
+                    onSubscribe(_s) {},
+                    onNext(_v) {},
+                    onError(e) { subscriber.onError(e); },
+                    onComplete() { subscriber.onNext(undefined); subscriber.onComplete(); }
+                });
+                subscriber.onSubscribe(sub);
+                return sub;
+            }
+        }));
     }
 }
