@@ -739,3 +739,172 @@ describe('Mono operator chaining', () => {
         expect(result).toBe(5);
     });
 });
+
+// ---------------------------------------------------------------------------
+// subscribe() convenience overloads
+// ---------------------------------------------------------------------------
+
+describe('Mono subscribe convenience overloads', () => {
+    test('subscribe() with no args — completes silently without throwing', () => {
+        expect(() => Mono.just(42).subscribe()).not.toThrow();
+    });
+
+    test('subscribe() on empty Mono — completes silently', () => {
+        expect(() => Mono.empty<number>().subscribe()).not.toThrow();
+    });
+
+    test('subscribe(onNext) — receives the value, auto-requests 1', () => {
+        const received: number[] = [];
+        Mono.just(42).subscribe(v => received.push(v));
+        expect(received).toEqual([42]);
+    });
+
+    test('subscribe(onNext) — Mono emits at most 1 value', () => {
+        const received: number[] = [];
+        Mono.just(99).subscribe(v => received.push(v));
+        expect(received).toHaveLength(1);
+    });
+
+    test('subscribe(onNext) — empty Mono calls no onNext', () => {
+        const received: number[] = [];
+        Mono.empty<number>().subscribe(v => received.push(v));
+        expect(received).toHaveLength(0);
+    });
+
+    test('subscribe(onNext, onError) — onError fires on failure', () => {
+        const errors: Error[] = [];
+        Mono.error<number>(new Error('boom')).subscribe(
+            () => {},
+            e => errors.push(e),
+        );
+        expect(errors).toHaveLength(1);
+        expect(errors[0].message).toBe('boom');
+    });
+
+    test('subscribe(onNext, onError, onComplete) — all three callbacks fire', () => {
+        const events: string[] = [];
+        Mono.just(7).subscribe(
+            v => events.push(`next:${v}`),
+            _e => events.push('error'),
+            () => events.push('complete'),
+        );
+        expect(events).toEqual(['next:7', 'complete']);
+    });
+
+    test('subscribe(onNext, onError, onComplete) — empty Mono fires only onComplete', () => {
+        const events: string[] = [];
+        Mono.empty<number>().subscribe(
+            () => events.push('next'),
+            () => events.push('error'),
+            () => events.push('complete'),
+        );
+        expect(events).toEqual(['complete']);
+    });
+
+    test('subscribe(onNext, onError, onComplete) — error Mono fires only onError', () => {
+        const events: string[] = [];
+        Mono.error<number>(new Error('x')).subscribe(
+            () => events.push('next'),
+            _e => events.push('error'),
+            () => events.push('complete'),
+        );
+        expect(events).toEqual(['error']);
+    });
+
+    test('subscribe(onNext) with no onError — unhandled error is re-thrown', () => {
+        expect(() =>
+            Mono.error<number>(new Error('unhandled')).subscribe(() => {}),
+        ).toThrow('unhandled');
+    });
+
+    test('full Subscriber object — caller controls demand manually', () => {
+        const received: number[] = [];
+        let completed = false;
+        const sub = Mono.just(5).subscribe({
+            onSubscribe(s) { /* no auto-request */ },
+            onNext(v) { received.push(v); },
+            onError() {},
+            onComplete() { completed = true; },
+        });
+        expect(received).toHaveLength(0); // no demand yet
+        sub.request(1);
+        expect(received).toEqual([5]);
+        expect(completed).toBe(true);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// flatMap with schedulers
+// ---------------------------------------------------------------------------
+
+describe('Mono.flatMap with schedulers', () => {
+    const asyncScheduler = { schedule: (fn: () => void) => setTimeout(fn, 0) };
+
+    test('flatMap: inner Mono.publishOn delivers value asynchronously', async () => {
+        const result = await new Promise<number>(resolve => {
+            Mono.just(3).flatMap(v =>
+                Mono.just(v * 10).publishOn(asyncScheduler),
+            ).subscribe(resolve);
+        });
+        expect(result).toBe(30);
+    });
+
+    test('flatMap: source subscribed on scheduler, inner runs synchronously', async () => {
+        const events: string[] = [];
+        await new Promise<void>(resolve => {
+            Mono.just(2)
+                .subscribeOn(asyncScheduler)
+                .flatMap(v => Mono.just(v * 5))
+                .subscribe(
+                    v => events.push(`next:${v}`),
+                    _e => {},
+                    () => { events.push('complete'); resolve(); },
+                );
+        });
+        expect(events).toEqual(['next:10', 'complete']);
+    });
+
+    test('flatMap: inner publishOn + outer subscribeOn both async', async () => {
+        const received: number[] = [];
+        await new Promise<void>(resolve => {
+            Mono.just(4)
+                .subscribeOn(asyncScheduler)
+                .flatMap(v => Mono.just(v + 1).publishOn(asyncScheduler))
+                .subscribe(
+                    v => received.push(v),
+                    _e => {},
+                    resolve,
+                );
+        });
+        expect(received).toEqual([5]);
+    });
+
+    test('flatMapMany: expands Mono to Flux via inner publishOn scheduler', async () => {
+        const received: number[] = [];
+        await new Promise<void>(resolve => {
+            Mono.just(3).flatMapMany(n =>
+                Flux.range(1, n).publishOn(asyncScheduler),
+            ).subscribe(
+                v => received.push(v),
+                _e => {},
+                resolve,
+            );
+        });
+        expect(received).toEqual([1, 2, 3]);
+    });
+
+    test('flatMapMany: subscribeOn delays source, inner is sync', async () => {
+        const received: number[] = [];
+        await new Promise<void>(resolve => {
+            Mono.just(3)
+                .subscribeOn(asyncScheduler)
+                .flatMapMany(n => Flux.range(0, n))
+                .subscribe(
+                    v => received.push(v),
+                    _e => {},
+                    resolve,
+                );
+        });
+        expect(received).toEqual([0, 1, 2]);
+    });
+});

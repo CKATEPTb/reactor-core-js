@@ -711,7 +711,7 @@ describe('Reactive Streams Spec — Rule 3.9: request(n ≤ 0) signals onError',
     test.each(sinksUnderTest)('%s: request(0) signals onError', (_name, factory) => {
         const sink = factory();
         const errors: Error[] = [];
-        const sub = sink.subscribe({ onSubscribe(_s) {}, onNext() {}, onError(e: any) { errors.push(e); }, onComplete() {} });
+        const sub = sink.subscribe({ onSubscribe(_s: any) {}, onNext() {}, onError(e: any) { errors.push(e); }, onComplete() {} });
         sub.request(0);
         expect(errors).toHaveLength(1);
         expect(errors[0].message).toMatch(/must be > 0/);
@@ -720,7 +720,7 @@ describe('Reactive Streams Spec — Rule 3.9: request(n ≤ 0) signals onError',
     test.each(sinksUnderTest)('%s: request(-1) signals onError', (_name, factory) => {
         const sink = factory();
         const errors: Error[] = [];
-        const sub = sink.subscribe({ onSubscribe(_s) {}, onNext() {}, onError(e: any) { errors.push(e); }, onComplete() {} });
+        const sub = sink.subscribe({ onSubscribe(_s: any) {}, onNext() {}, onError(e: any) { errors.push(e); }, onComplete() {} });
         sub.request(-1);
         expect(errors).toHaveLength(1);
         expect(errors[0].message).toMatch(/must be > 0/);
@@ -730,7 +730,7 @@ describe('Reactive Streams Spec — Rule 3.9: request(n ≤ 0) signals onError',
         const sink = factory();
         const events: string[] = [];
         const sub = sink.subscribe({
-            onSubscribe(_s) {},
+            onSubscribe(_s: any) {},
             onNext() { events.push('next'); },
             onError() { events.push('error'); },
             onComplete() { events.push('complete'); }

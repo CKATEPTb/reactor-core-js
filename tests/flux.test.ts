@@ -577,6 +577,90 @@ describe('Flux filtering operators', () => {
         });
     });
 
+    describe('skipUntil', () => {
+        it('passes all items when trigger fires before source (cold sync trigger)', () => {
+            // Trigger is a cold sync publisher — fires on first request, before source emits
+            expect(collect(Flux.just(1, 2, 3).skipUntil(Flux.just('go')))).toEqual([1, 2, 3]);
+        });
+
+        it('drops all items when trigger completes empty — gate never opens', () => {
+            const ts = new TestSubscriber<number>();
+            Flux.just(1, 2, 3).skipUntil(Flux.empty()).subscribe(ts);
+            ts.requestUnbounded();
+            expect(ts.items).toEqual([]);
+            expect(ts.completed).toBe(true);
+        });
+
+        it('propagates error from trigger publisher', () => {
+            const err = new Error('trigger-err');
+            const ts = new TestSubscriber<number>();
+            Flux.just(1, 2, 3).skipUntil(Flux.error(err)).subscribe(ts);
+            ts.requestUnbounded();
+            expect(ts.error).toBe(err);
+        });
+
+        it('propagates error from source publisher', () => {
+            const err = new Error('src-err');
+            const ts = new TestSubscriber<number>();
+            Flux.error<number>(err).skipUntil(Flux.just('go')).subscribe(ts);
+            ts.requestUnbounded();
+            expect(ts.error).toBe(err);
+        });
+
+        it('skips items emitted before trigger fires, passes items after — hot source + hot trigger', () => {
+            const sourceSink = Sinks.many().unicast().onBackpressureBuffer<number>();
+            const triggerSink = Sinks.many().unicast().onBackpressureBuffer<string>();
+
+            const received: number[] = [];
+            let completed = false;
+            Flux.from(sourceSink).skipUntil(triggerSink).subscribe(
+                (v: number) => received.push(v),
+                (_e: Error) => {},
+                () => { completed = true; },
+            );
+
+            sourceSink.next(1); // skipped — gate is closed
+            sourceSink.next(2); // skipped
+            expect(received).toEqual([]);
+
+            triggerSink.next('go'); // gate opens
+
+            sourceSink.next(3); // passes
+            sourceSink.next(4); // passes
+            sourceSink.complete();
+
+            expect(received).toEqual([3, 4]);
+            expect(completed).toBe(true);
+        });
+
+        it('replenishes demand for items skipped during gating', () => {
+            // request(2), source emits 1,2,3,4 — first two are skipped (trigger = Flux.never),
+            // demand replenished each time → all four items delivered to primary source, all dropped
+            const ts = new TestSubscriber<number>();
+            Flux.just(1, 2, 3, 4).skipUntil(Flux.never()).subscribe(ts);
+            ts.request(2);
+            expect(ts.items).toEqual([]);
+            // source completes, subscriber also receives onComplete
+            expect(ts.completed).toBe(true);
+        });
+
+        it('cancel stops delivery', () => {
+            const sourceSink = Sinks.many().unicast().onBackpressureBuffer<number>();
+            const triggerSink = Sinks.many().unicast().onBackpressureBuffer<string>();
+
+            const received: number[] = [];
+            const sub = Flux.from(sourceSink).skipUntil(triggerSink).subscribe(
+                (v: number) => received.push(v),
+            );
+
+            triggerSink.next('go');
+            sourceSink.next(1);
+            sub.unsubscribe();
+            sourceSink.next(2); // after cancel — must not arrive
+            expect(received).toEqual([1]);
+        });
+    });
+
     describe('distinct', () => {
         it('removes duplicate items', () => {
             expect(collect(Flux.just(1, 2, 1, 3, 2).distinct())).toEqual([1, 2, 3]);
