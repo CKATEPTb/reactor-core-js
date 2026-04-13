@@ -2,6 +2,7 @@ import {Publisher} from "@/publishers/Publisher";
 import {Subscriber} from "@/subscriptions/Subscriber";
 import {Subscription} from "@/subscriptions/Subscription";
 import {Scheduler} from "@/schedulers/Scheduler";
+import {Signal} from "@/publishers/Signal";
 
 /**
  * Base class for Flux and Mono providing the common operator implementations
@@ -332,6 +333,332 @@ export abstract class AbstractPipePublisher<T, Self> implements Publisher<T> {
                     onNext(v) { scheduler.schedule(() => subscriber.onNext(v)); },
                     onError(e) { scheduler.schedule(() => subscriber.onError(e)); },
                     onComplete() { scheduler.schedule(() => subscriber.onComplete()); }
+                });
+                subscriber.onSubscribe(sub);
+                return sub;
+            }
+        });
+    }
+
+    // ──────────────────────── Error recovery ────────────────────────────────
+
+    /**
+     * Falls back to a publisher produced by `fn` when the source signals an error.
+     *
+     * Unlike {@link onErrorReturn} (which takes a static replacement), this operator
+     * calls `fn` with the actual error, allowing dynamic recovery based on the error type.
+     *
+     * @param fn - Called with the error; returns the replacement publisher.
+     * @returns A publisher that recovers from errors dynamically.
+     *
+     * @example
+     * ```typescript
+     * Flux.error(new Error('not found'))
+     *   .onErrorResume(e => e.message === 'not found' ? Flux.just('default') : Flux.error(e))
+     *   .subscribe(v => console.log(v)); // 'default'
+     * ```
+     */
+    public onErrorResume(fn: (error: Error) => Publisher<T>): Self {
+        return this.wrapSource({
+            subscribe: (subscriber: Subscriber<T>): Subscription => {
+                let primarySub: Subscription = { request() {}, unsubscribe() {} };
+                let altSub: Subscription | null = null;
+                let cancelled = false;
+                let demand = 0;
+
+                const operatorSub: Subscription = {
+                    request(n: number) {
+                        if (cancelled) return;
+                        if (n <= 0) { subscriber.onError(new Error(`request must be > 0, but was ${n}`)); return; }
+                        demand = Math.min(demand + n, Number.MAX_SAFE_INTEGER);
+                        if (altSub) altSub.request(n); else primarySub.request(n);
+                    },
+                    unsubscribe() { cancelled = true; primarySub.unsubscribe(); altSub?.unsubscribe(); }
+                };
+
+                this.source.subscribe({
+                    onSubscribe(s: Subscription) { primarySub = s; subscriber.onSubscribe(operatorSub); },
+                    onNext(v: T) { subscriber.onNext(v); },
+                    onError(e: Error) {
+                        if (cancelled) return;
+                        let alt: Publisher<T>;
+                        try { alt = fn(e); }
+                        catch (fnErr) { subscriber.onError(fnErr instanceof Error ? fnErr : new Error(String(fnErr))); return; }
+                        altSub = alt.subscribe({
+                            onSubscribe(s: Subscription) { altSub = s; if (demand > 0) s.request(demand); },
+                            onNext(v: T) { subscriber.onNext(v); },
+                            onError(e2: Error) { subscriber.onError(e2); },
+                            onComplete() { subscriber.onComplete(); }
+                        });
+                    },
+                    onComplete() { subscriber.onComplete(); }
+                });
+
+                return operatorSub;
+            }
+        });
+    }
+
+    /**
+     * Transforms the error signal using `fn` before forwarding it downstream.
+     *
+     * Useful for converting low-level errors into domain-specific error types.
+     *
+     * @param fn - Receives the original error and returns a replacement error.
+     * @returns A publisher that transforms errors before propagating them.
+     *
+     * @example
+     * ```typescript
+     * Flux.error(new Error('HTTP 404'))
+     *   .onErrorMap(e => new Error(`NotFound: ${e.message}`))
+     *   .subscribe(null, e => console.error(e.message)); // NotFound: HTTP 404
+     * ```
+     */
+    public onErrorMap(fn: (error: Error) => Error): Self {
+        return this.wrapSource({
+            subscribe: (subscriber: Subscriber<T>): Subscription => {
+                const sub = this.source.subscribe({
+                    onSubscribe(_s) {},
+                    onNext(v: T) { subscriber.onNext(v); },
+                    onError(e: Error) {
+                        try { subscriber.onError(fn(e)); }
+                        catch (fnErr) { subscriber.onError(fnErr instanceof Error ? fnErr : new Error(String(fnErr))); }
+                    },
+                    onComplete() { subscriber.onComplete(); }
+                });
+                subscriber.onSubscribe(sub);
+                return sub;
+            }
+        });
+    }
+
+    // ──────────────────────── Timing ────────────────────────────────────────
+
+    /**
+     * Emits a `TimeoutError` (or switches to `fallback`) if no item is received
+     * within `ms` milliseconds of the previous item (or of subscription).
+     *
+     * The timer resets on each received item, so it measures **inter-item** idle time.
+     *
+     * @param ms - Timeout duration in milliseconds.
+     * @param fallback - Optional publisher to switch to on timeout instead of erroring.
+     * @returns A publisher that errors or falls back when no item arrives in time.
+     *
+     * @example
+     * ```typescript
+     * Flux.never<number>()
+     *   .timeout(100)
+     *   .subscribe(null, e => console.error(e.message)); // TimeoutError after 100ms
+     * ```
+     */
+    public timeout(ms: number, fallback?: Publisher<T>): Self {
+        return this.wrapSource({
+            subscribe: (subscriber: Subscriber<T>): Subscription => {
+                let sourceSub: Subscription = { request() {}, unsubscribe() {} };
+                let altSub: Subscription | null = null;
+                let cancelled = false;
+                let sourceDone = false;
+                let terminated = false;
+                let demand = 0;
+                let timer: ReturnType<typeof setTimeout> | null = null;
+
+                const clearTimer = () => { if (timer !== null) { clearTimeout(timer); timer = null; } };
+
+                const startTimer = () => {
+                    clearTimer();
+                    timer = setTimeout(() => {
+                        if (cancelled || terminated) return;
+                        sourceDone = true;
+                        sourceSub.unsubscribe();
+                        if (fallback) {
+                            altSub = fallback.subscribe({
+                                onSubscribe(s: Subscription) { altSub = s; if (demand > 0) s.request(demand); },
+                                onNext(v: T) { if (!cancelled && !terminated) subscriber.onNext(v); },
+                                onError(e: Error) { if (!cancelled && !terminated) { terminated = true; subscriber.onError(e); } },
+                                onComplete() { if (!cancelled && !terminated) { terminated = true; subscriber.onComplete(); } }
+                            });
+                        } else {
+                            terminated = true;
+                            subscriber.onError(new Error(`TimeoutError: no item within ${ms}ms`));
+                        }
+                    }, ms);
+                };
+
+                const operatorSub: Subscription = {
+                    request(n: number) {
+                        if (cancelled || terminated) return;
+                        if (n <= 0) { subscriber.onError(new Error(`request must be > 0, but was ${n}`)); return; }
+                        demand = Math.min(demand + n, Number.MAX_SAFE_INTEGER);
+                        if (altSub) altSub.request(n); else sourceSub.request(n);
+                    },
+                    unsubscribe() { cancelled = true; clearTimer(); sourceSub.unsubscribe(); altSub?.unsubscribe(); }
+                };
+
+                this.source.subscribe({
+                    onSubscribe(s: Subscription) { sourceSub = s; subscriber.onSubscribe(operatorSub); startTimer(); },
+                    onNext(v: T) {
+                        if (cancelled || sourceDone) return;
+                        startTimer();
+                        subscriber.onNext(v);
+                    },
+                    onError(e: Error) {
+                        clearTimer();
+                        if (!cancelled && !terminated) { terminated = true; subscriber.onError(e); }
+                    },
+                    onComplete() {
+                        clearTimer();
+                        if (!cancelled && !terminated) { terminated = true; subscriber.onComplete(); }
+                    }
+                });
+
+                return operatorSub;
+            }
+        });
+    }
+
+    /**
+     * Delays the subscription to the upstream source by `ms` milliseconds.
+     *
+     * `onSubscribe` is delivered immediately with a proxy `Subscription`.
+     * Any `request(n)` calls before the delay elapses are accumulated and
+     * forwarded once the actual subscription starts.
+     *
+     * @param ms - Delay in milliseconds before subscribing to the source.
+     * @returns A publisher whose upstream subscription is deferred.
+     */
+    public delaySubscription(ms: number): Self {
+        return this.wrapSource({
+            subscribe: (subscriber: Subscriber<T>): Subscription => {
+                let sourceSub: Subscription | null = null;
+                let cancelled = false;
+                let demand = 0;
+
+                const proxy: Subscription = {
+                    request(n: number) {
+                        if (cancelled) return;
+                        if (n <= 0) { subscriber.onError(new Error(`request must be > 0, but was ${n}`)); return; }
+                        demand = Math.min(demand + n, Number.MAX_SAFE_INTEGER);
+                        if (sourceSub) sourceSub.request(n);
+                    },
+                    unsubscribe() { cancelled = true; sourceSub?.unsubscribe(); }
+                };
+
+                subscriber.onSubscribe(proxy);
+
+                const timerId = setTimeout(() => {
+                    if (cancelled) return;
+                    this.source.subscribe({
+                        onSubscribe(s: Subscription) {
+                            sourceSub = s;
+                            if (demand > 0) s.request(demand);
+                        },
+                        onNext(v: T) { if (!cancelled) subscriber.onNext(v); },
+                        onError(e: Error) { if (!cancelled) subscriber.onError(e); },
+                        onComplete() { if (!cancelled) subscriber.onComplete(); }
+                    });
+                }, ms);
+
+                // Override unsubscribe to also clear the timer
+                const originalUnsub = proxy.unsubscribe.bind(proxy);
+                (proxy as { unsubscribe: () => void }).unsubscribe = () => { clearTimeout(timerId); originalUnsub(); };
+
+                return proxy;
+            }
+        });
+    }
+
+    // ──────────────────────── Observability ─────────────────────────────────
+
+    /**
+     * Logs each reactive signal to the console for debugging.
+     *
+     * Prints `onSubscribe`, `request(n)`, `onNext(value)`, `onError`, `onComplete`,
+     * and `cancel` with an optional label prefix.
+     *
+     * @param label - Optional label prepended to each log line (default: `'reactor'`).
+     * @returns A publisher with logging side effects attached.
+     *
+     * @example
+     * ```typescript
+     * Flux.just(1, 2).log('source').subscribe(v => console.log(v));
+     * // [source] onSubscribe
+     * // [source] request(9007199254740991)
+     * // [source] onNext(1)
+     * // ...
+     * ```
+     */
+    public log(label: string = 'reactor'): Self {
+        return this.wrapSource({
+            subscribe: (subscriber: Subscriber<T>): Subscription => {
+                const tag = `[${label}]`;
+                const sub = this.source.subscribe({
+                    onSubscribe(_s) { console.log(`${tag} onSubscribe`); },
+                    onNext(v: T) { console.log(`${tag} onNext(${JSON.stringify(v)})`); subscriber.onNext(v); },
+                    onError(e: Error) { console.error(`${tag} onError: ${e.message}`); subscriber.onError(e); },
+                    onComplete() { console.log(`${tag} onComplete`); subscriber.onComplete(); }
+                });
+                const wrappedSub: Subscription = {
+                    request(n: number) { console.log(`${tag} request(${n})`); sub.request(n); },
+                    unsubscribe() { console.log(`${tag} cancel`); sub.unsubscribe(); }
+                };
+                subscriber.onSubscribe(wrappedSub);
+                return wrappedSub;
+            }
+        });
+    }
+
+    /**
+     * Executes a side-effect `fn` whenever the downstream subscriber issues a `request(n)`.
+     *
+     * Useful for debugging backpressure — see exactly how much demand is flowing upstream.
+     * Any exception thrown by `fn` is silently swallowed.
+     *
+     * @param fn - Called with the requested count `n`.
+     * @returns A publisher with the side effect attached to the request signal.
+     */
+    public doOnRequest(fn: (n: number) => void): Self {
+        return this.wrapSource({
+            subscribe: (subscriber: Subscriber<T>): Subscription => {
+                const sub = this.source.subscribe({
+                    onSubscribe(_s) {},
+                    onNext(v: T) { subscriber.onNext(v); },
+                    onError(e: Error) { subscriber.onError(e); },
+                    onComplete() { subscriber.onComplete(); }
+                });
+                const wrappedSub: Subscription = {
+                    request(n: number) { try { fn(n); } catch (_) {} sub.request(n); },
+                    unsubscribe() { sub.unsubscribe(); }
+                };
+                subscriber.onSubscribe(wrappedSub);
+                return wrappedSub;
+            }
+        });
+    }
+
+    /**
+     * Executes a side-effect `fn` for every reactive signal (next, error, complete).
+     *
+     * The {@link Signal} discriminated union lets you inspect the kind and payload
+     * of each event in a single callback.
+     *
+     * @param fn - Called for every signal with a {@link Signal} wrapper.
+     * @returns A publisher with the side effect attached to all signals.
+     *
+     * @example
+     * ```typescript
+     * Flux.just(1, 2)
+     *   .doOnEach(s => { if (s.kind === 'next') console.log('item:', s.value); })
+     *   .subscribe();
+     * ```
+     */
+    public doOnEach(fn: (signal: Signal<T>) => void): Self {
+        return this.wrapSource({
+            subscribe: (subscriber: Subscriber<T>): Subscription => {
+                const sub = this.source.subscribe({
+                    onSubscribe(_s) {},
+                    onNext(v: T) { try { fn(Signal.next(v)); } catch (_) {} subscriber.onNext(v); },
+                    onError(e: Error) { try { fn(Signal.error<T>(e)); } catch (_) {} subscriber.onError(e); },
+                    onComplete() { try { fn(Signal.complete<T>()); } catch (_) {} subscriber.onComplete(); }
                 });
                 subscriber.onSubscribe(sub);
                 return sub;

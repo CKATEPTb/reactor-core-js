@@ -246,6 +246,113 @@ export class Mono<T> extends AbstractPipePublisher<T, Mono<T>> implements PipePu
         });
     }
 
+    /**
+     * Alias for {@link Mono.generate} — imperative push interface.
+     *
+     * The generator receives a {@link Sink} and should call exactly one of:
+     * `sink.next(value)`, `sink.error(err)`, or `sink.complete()`.
+     *
+     * @param generator - Function that drives the `Mono` via the provided `Sink<T>`.
+     * @returns A cold `Mono<T>`.
+     */
+    public static create<T>(generator: (sink: Sink<T>) => void): Mono<T> {
+        return Mono.generate(generator);
+    }
+
+    /**
+     * Creates a `Mono<number>` that emits `0` after `ms` milliseconds then completes.
+     *
+     * Useful for introducing timed delays in reactive pipelines.
+     *
+     * @param ms - The delay in milliseconds.
+     * @returns A `Mono<number>` that emits `0` after the delay.
+     *
+     * @example
+     * ```typescript
+     * Mono.delay(500).flatMap(() => Mono.just('hello')).subscribe(v => console.log(v));
+     * ```
+     */
+    public static delay(ms: number): Mono<number> {
+        return Mono.generate<number>(sink => {
+            const id = setTimeout(() => sink.next(0), ms);
+            // cancellation note: timeout fires and is a no-op if sink already terminated
+            void id;
+        });
+    }
+
+    /**
+     * Creates a `Mono<T>` from a synchronous, potentially-throwing factory function.
+     *
+     * The factory is called **lazily** at subscription time (not at assembly time).
+     * If the factory throws, the exception is forwarded as `onError`.
+     *
+     * @param fn - Synchronous factory invoked once per subscription.
+     * @returns A cold `Mono<T>`.
+     *
+     * @example
+     * ```typescript
+     * Mono.fromCallable(() => JSON.parse(rawJson)).subscribe(v => console.log(v));
+     * ```
+     */
+    public static fromCallable<T>(fn: () => T): Mono<T> {
+        return Mono.generate<T>(sink => {
+            try { sink.next(fn()); }
+            catch (e) { sink.error(e instanceof Error ? e : new Error(String(e))); }
+        });
+    }
+
+    /**
+     * Races multiple `Mono`s — emits the first value to arrive, cancelling the rest.
+     *
+     * If a source completes without emitting, it is excluded from the race.
+     * If **all** sources complete empty, the resulting `Mono` also completes empty.
+     * If any source errors before another source emits, the error is propagated.
+     *
+     * @param sources - One or more `Mono<T>` sources to race.
+     * @returns A `Mono<T>` that emits the first available value.
+     *
+     * @example
+     * ```typescript
+     * Mono.firstWithValue(slow, fast).subscribe(v => console.log(v)); // fast's value
+     * ```
+     */
+    public static firstWithValue<T>(...sources: Mono<T>[]): Mono<T> {
+        if (sources.length === 0) return Mono.empty<T>();
+        return Mono.generate<T>(sink => {
+            let done = false;
+            let completedCount = 0;
+            const subs: Subscription[] = [];
+
+            for (const source of sources) {
+                const sub = source.subscribe({
+                    onSubscribe(_s) {},
+                    onNext(v: T) {
+                        if (done) return;
+                        done = true;
+                        for (const s of subs) s.unsubscribe();
+                        sink.next(v);
+                    },
+                    onError(e: Error) {
+                        if (done) return;
+                        done = true;
+                        for (const s of subs) s.unsubscribe();
+                        sink.error(e);
+                    },
+                    onComplete() {
+                        if (done) return;
+                        completedCount++;
+                        if (completedCount === sources.length) {
+                            done = true;
+                            sink.complete();
+                        }
+                    }
+                });
+                subs.push(sub);
+            }
+            for (const sub of subs) sub.request(1);
+        });
+    }
+
     // ─────────────────────── PipePublisher operators ─────────────────────────
 
     /**
@@ -743,6 +850,396 @@ export class Mono<T> extends AbstractPipePublisher<T, Mono<T>> implements PipePu
             });
             sub.request(1);
         });
+    }
+
+    /**
+     * Side effect executed when the `Mono` emits its value.
+     *
+     * Does **not** affect the emitted value or stream lifecycle.
+     * Exceptions thrown by `fn` are forwarded as `onError`.
+     *
+     * @param fn - Called with the emitted value.
+     * @returns A `Mono<T>` with the side effect attached.
+     *
+     * @example
+     * ```typescript
+     * Mono.just(42).doOnSuccess(v => console.log('got', v)).subscribe();
+     * ```
+     */
+    public doOnSuccess(fn: (value: T) => void): Mono<T> {
+        return new Mono<T>({
+            subscribe: (subscriber: Subscriber<T>): Subscription => {
+                const sub = this.source.subscribe({
+                    onSubscribe(_s) {},
+                    onNext(v) {
+                        try { fn(v); } catch (e) {
+                            subscriber.onError(e instanceof Error ? e : new Error(String(e)));
+                            return;
+                        }
+                        subscriber.onNext(v);
+                    },
+                    onError(e) { subscriber.onError(e); },
+                    onComplete() { subscriber.onComplete(); }
+                });
+                subscriber.onSubscribe(sub);
+                return sub;
+            }
+        });
+    }
+
+    /**
+     * Converts a terminal error into a normal `onComplete` signal.
+     *
+     * If a `predicate` is supplied, only errors for which the predicate returns `true`
+     * are swallowed; others are re-propagated as-is.
+     *
+     * @param predicate - Optional filter; when absent all errors are converted.
+     * @returns A `Mono<T>` that completes rather than errors (when predicate matches).
+     *
+     * @example
+     * ```typescript
+     * Mono.error(new Error('oops')).onErrorComplete().subscribe(undefined, undefined, () => console.log('done'));
+     * ```
+     */
+    public onErrorComplete(predicate?: (e: Error) => boolean): Mono<T> {
+        return new Mono<T>({
+            subscribe: (subscriber: Subscriber<T>): Subscription => {
+                const sub = this.source.subscribe({
+                    onSubscribe(_s) {},
+                    onNext(v) { subscriber.onNext(v); },
+                    onError(e) {
+                        if (!predicate || predicate(e)) subscriber.onComplete();
+                        else subscriber.onError(e);
+                    },
+                    onComplete() { subscriber.onComplete(); }
+                });
+                subscriber.onSubscribe(sub);
+                return sub;
+            }
+        });
+    }
+
+    /**
+     * Ignores any value emitted by this `Mono` and, upon normal completion,
+     * emits `value` instead.
+     *
+     * Errors from the source are propagated unchanged.
+     *
+     * @param value - The value to emit after this `Mono` completes.
+     * @returns A `Mono<R>` that emits `value` on source completion.
+     *
+     * @example
+     * ```typescript
+     * Mono.just('ignored').thenReturn(42).subscribe(v => console.log(v)); // 42
+     * ```
+     */
+    public thenReturn<R>(value: R): Mono<R> {
+        return new Mono<R>({
+            subscribe: (subscriber: Subscriber<R>): Subscription => {
+                let done = false;
+                const sub = this.source.subscribe({
+                    onSubscribe(_s) {},
+                    onNext(_v) { /* swallow the emitted value */ },
+                    onError(e) { if (!done) { done = true; subscriber.onError(e); } },
+                    onComplete() {
+                        if (!done) {
+                            done = true;
+                            subscriber.onNext(value);
+                            subscriber.onComplete();
+                        }
+                    }
+                });
+                subscriber.onSubscribe(sub);
+                return sub;
+            }
+        });
+    }
+
+    /**
+     * Delays delivery of the emitted value by `ms` milliseconds.
+     *
+     * The delay is introduced **after** the source emits; completion and errors
+     * are forwarded without delay.
+     *
+     * @param ms - Delay in milliseconds.
+     * @returns A `Mono<T>` whose value arrives `ms` milliseconds later.
+     *
+     * @example
+     * ```typescript
+     * Mono.just('hello').delayElement(200).subscribe(v => console.log(v));
+     * ```
+     */
+    public delayElement(ms: number): Mono<T> {
+        return new Mono<T>({
+            subscribe: (subscriber: Subscriber<T>): Subscription => {
+                let timerId: ReturnType<typeof setTimeout> | null = null;
+                let cancelled = false;
+                const sub = this.source.subscribe({
+                    onSubscribe(_s) {},
+                    onNext(v) {
+                        if (cancelled) return;
+                        timerId = setTimeout(() => {
+                            if (!cancelled) {
+                                subscriber.onNext(v);
+                                subscriber.onComplete();
+                            }
+                        }, ms);
+                    },
+                    onError(e) { subscriber.onError(e); },
+                    onComplete() { /* wait for timer, or complete immediately if no value */ }
+                });
+                const proxy: Subscription = {
+                    request(n) { sub.request(n); },
+                    unsubscribe() {
+                        cancelled = true;
+                        if (timerId !== null) clearTimeout(timerId);
+                        sub.unsubscribe();
+                    }
+                };
+                subscriber.onSubscribe(proxy);
+                return proxy;
+            }
+        });
+    }
+
+    /**
+     * Holds the emitted value until a trigger publisher (returned by `triggerFn`) emits
+     * or completes, then forwards the value downstream.
+     *
+     * If the trigger errors, the error is propagated and the value is discarded.
+     * If the source is empty, completes immediately without invoking `triggerFn`.
+     *
+     * @param triggerFn - Receives the emitted value and returns a trigger `Publisher`.
+     * @returns A `Mono<T>` that emits after the trigger fires.
+     *
+     * @example
+     * ```typescript
+     * Mono.just(42).delayUntil(() => Mono.delay(300)).subscribe(v => console.log(v));
+     * ```
+     */
+    public delayUntil(triggerFn: (value: T) => Publisher<unknown>): Mono<T> {
+        return new Mono<T>({
+            subscribe: (subscriber: Subscriber<T>): Subscription => {
+                let outerSub: Subscription = { request() {}, unsubscribe() {} };
+                let innerSub: Subscription | null = null;
+                let cancelled = false;
+
+                const operatorSub: Subscription = {
+                    request(n) { if (!cancelled) outerSub.request(n); },
+                    unsubscribe() {
+                        cancelled = true;
+                        outerSub.unsubscribe();
+                        innerSub?.unsubscribe();
+                    }
+                };
+
+                this.source.subscribe({
+                    onSubscribe(s) { outerSub = s; subscriber.onSubscribe(operatorSub); },
+                    onNext(v: T) {
+                        if (cancelled) return;
+                        let trigger: Publisher<unknown>;
+                        try { trigger = triggerFn(v); }
+                        catch (e) {
+                            subscriber.onError(e instanceof Error ? e : new Error(String(e)));
+                            return;
+                        }
+                        let triggered = false;
+                        innerSub = trigger.subscribe({
+                            onSubscribe(_s) {},
+                            onNext(_u) {
+                                if (triggered || cancelled) return;
+                                triggered = true;
+                                innerSub?.unsubscribe();
+                                subscriber.onNext(v);
+                                subscriber.onComplete();
+                            },
+                            onError(e) { if (!cancelled) subscriber.onError(e); },
+                            onComplete() {
+                                if (!triggered && !cancelled) {
+                                    triggered = true;
+                                    subscriber.onNext(v);
+                                    subscriber.onComplete();
+                                }
+                            }
+                        });
+                        innerSub.request(Number.MAX_SAFE_INTEGER);
+                    },
+                    onError(e) { if (!cancelled) subscriber.onError(e); },
+                    onComplete() { if (!cancelled && !innerSub) subscriber.onComplete(); }
+                });
+
+                return operatorSub;
+            }
+        });
+    }
+
+    /**
+     * Falls back to `other` if this `Mono` completes without emitting a value (empty).
+     *
+     * If this `Mono` emits a value or errors, `other` is never subscribed to.
+     *
+     * @param other - The fallback `Mono<T>` to subscribe to when the source is empty.
+     * @returns A `Mono<T>` that emits from `other` when the source is empty.
+     *
+     * @example
+     * ```typescript
+     * Mono.empty<number>().or(Mono.just(99)).subscribe(v => console.log(v)); // 99
+     * ```
+     */
+    public or(other: Mono<T>): Mono<T> {
+        return new Mono<T>({
+            subscribe: (subscriber: Subscriber<T>): Subscription => {
+                let outerSub: Subscription = { request() {}, unsubscribe() {} };
+                let innerSub: Subscription | null = null;
+                let cancelled = false;
+                let emitted = false;
+
+                const operatorSub: Subscription = {
+                    request(n) {
+                        if (cancelled) return;
+                        if (innerSub) innerSub.request(n);
+                        else outerSub.request(n);
+                    },
+                    unsubscribe() {
+                        cancelled = true;
+                        outerSub.unsubscribe();
+                        innerSub?.unsubscribe();
+                    }
+                };
+
+                this.source.subscribe({
+                    onSubscribe(s) { outerSub = s; subscriber.onSubscribe(operatorSub); },
+                    onNext(v: T) {
+                        if (cancelled) return;
+                        emitted = true;
+                        subscriber.onNext(v);
+                    },
+                    onError(e) { if (!cancelled) subscriber.onError(e); },
+                    onComplete() {
+                        if (cancelled || emitted) return;
+                        innerSub = other.subscribe({
+                            onSubscribe(_s) {},
+                            onNext(v) { if (!cancelled) subscriber.onNext(v); },
+                            onError(e) { if (!cancelled) subscriber.onError(e); },
+                            onComplete() { if (!cancelled) subscriber.onComplete(); }
+                        });
+                        innerSub.request(1);
+                    }
+                });
+
+                return operatorSub;
+            }
+        });
+    }
+
+    /**
+     * Re-subscribes to this `Mono` on error, using a control publisher to decide
+     * whether and when to retry.
+     *
+     * Each time the source errors, the error is pushed to the control stream returned
+     * by `fn`. If that stream emits any item, the source is re-subscribed. If it
+     * completes or errors, that terminal signal is forwarded downstream.
+     *
+     * @param fn - Receives a `Flux<Error>` of upstream errors; returns a control publisher.
+     * @returns A `Mono<T>` that retries according to the control signal.
+     *
+     * @example
+     * ```typescript
+     * Mono.error(new Error('boom'))
+     *   .retryWhen(errors => errors.take(3))
+     *   .subscribe(undefined, e => console.error(e));
+     * ```
+     */
+    public retryWhen(fn: (errors: Flux<Error>) => Publisher<unknown>): Mono<T> {
+        return new Mono<T>({
+            subscribe: (subscriber: Subscriber<T>): Subscription => {
+                let cancelled = false;
+                let currentSub: Subscription | null = null;
+                let emitted = false;
+
+                // Relay subscriber that the control stream holds
+                let controlSub: { onNext: (e: Error) => void } | null = null;
+
+                const errorRelay = Flux.from<Error>({
+                    subscribe(relaySubscriber) {
+                        controlSub = { onNext: (e) => relaySubscriber.onNext(e) };
+                        const sub: Subscription = {
+                            request(_n) {},
+                            unsubscribe() { cancelled = true; }
+                        };
+                        relaySubscriber.onSubscribe(sub);
+                        return sub;
+                    }
+                });
+
+                const control = fn(errorRelay);
+
+                let controlSubscriber: {
+                    onNext: (v: unknown) => void;
+                    onError: (e: Error) => void;
+                    onComplete: () => void;
+                };
+
+                const attempt = () => {
+                    if (cancelled || emitted) return;
+                    currentSub = this.source.subscribe({
+                        onSubscribe(_s) {},
+                        onNext(v: T) {
+                            if (cancelled || emitted) return;
+                            emitted = true;
+                            subscriber.onNext(v);
+                            subscriber.onComplete();
+                        },
+                        onError(e: Error) {
+                            if (cancelled) return;
+                            controlSub?.onNext(e);
+                        },
+                        onComplete() {
+                            if (!cancelled && !emitted) subscriber.onComplete();
+                        }
+                    });
+                    currentSub.request(1);
+                };
+
+                const controlSub2 = control.subscribe({
+                    onSubscribe(_s) {},
+                    onNext(_v: unknown) { if (!cancelled && !emitted) attempt(); },
+                    onError(e: Error) { if (!cancelled) subscriber.onError(e); },
+                    onComplete() { if (!cancelled && !emitted) subscriber.onComplete(); }
+                });
+                controlSub2.request(Number.MAX_SAFE_INTEGER);
+
+                controlSubscriber = {
+                    onNext: (_v) => { if (!cancelled && !emitted) attempt(); },
+                    onError: (e) => { if (!cancelled) subscriber.onError(e); },
+                    onComplete: () => { if (!cancelled && !emitted) subscriber.onComplete(); }
+                };
+                void controlSubscriber;
+
+                attempt();
+
+                const operatorSub: Subscription = {
+                    request(_n) {},
+                    unsubscribe() {
+                        cancelled = true;
+                        currentSub?.unsubscribe();
+                        controlSub2.unsubscribe();
+                    }
+                };
+                subscriber.onSubscribe(operatorSub);
+                return operatorSub;
+            }
+        });
+    }
+
+    /**
+     * Alias for {@link Mono#toPromise} — returns a `Promise<T | null>` that resolves
+     * with the emitted value (or `null` if the `Mono` is empty).
+     *
+     * @returns A `Promise<T | null>`.
+     */
+    public toFuture(): Promise<T | null> {
+        return this.toPromise();
     }
 
     /**

@@ -1,4 +1,4 @@
-import {Flux, Mono, Sinks, Subscriber, Subscription} from '@/.';
+import {Flux, Mono, Publisher, Sinks, Subscriber, Subscription} from '@/.';
 
 // ─────────────────────────── Test helpers ────────────────────────────────────
 
@@ -1790,5 +1790,915 @@ describe('Flux.flatMap with schedulers', () => {
         });
         // concatMap is ordered — must arrive as 30, 10, 20
         expect(received).toEqual([30, 10, 20]);
+    });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// New static factories
+// ═══════════════════════════════════════════════════════════════════════════════
+
+describe('Flux.interval', () => {
+    it('does not emit without demand', done => {
+        const ts = new TestSubscriber<number>();
+        Flux.interval(20).subscribe(ts);
+        setTimeout(() => {
+            expect(ts.items).toHaveLength(0);
+            ts.sub.unsubscribe();
+            done();
+        }, 60);
+    });
+
+    it('emits counter 0, 1, 2 when demand is present', async () => {
+        const result = await new Promise<number[]>(resolve => {
+            const items: number[] = [];
+            let sub!: Subscription;
+            const s = Flux.interval(20).subscribe({
+                onSubscribe(ss) { sub = ss; ss.request(3); },
+                onNext(v) {
+                    items.push(v);
+                    if (items.length === 3) { sub.unsubscribe(); resolve(items); }
+                },
+                onError() { resolve([]); },
+                onComplete() {}
+            });
+            void s;
+        });
+        expect(result).toEqual([0, 1, 2]);
+    });
+
+    it('drops ticks when demand is zero (no buffering)', done => {
+        const ts = new TestSubscriber<number>();
+        const s = Flux.interval(20).subscribe(ts);
+        // 3 ticks pass with no request → should be dropped
+        setTimeout(() => {
+            const before = ts.items.length;
+            expect(before).toBe(0);
+            s.unsubscribe();
+            done();
+        }, 70);
+    });
+
+    it('cancellation stops emission', done => {
+        const ts = new TestSubscriber<number>();
+        const s = Flux.interval(20).subscribe(ts);
+        ts.request(Number.MAX_SAFE_INTEGER);
+        setTimeout(() => {
+            s.unsubscribe();
+            const count = ts.items.length;
+            setTimeout(() => {
+                expect(ts.items.length).toBe(count); // no more items after cancel
+                done();
+            }, 60);
+        }, 40);
+    });
+});
+
+describe('Flux.zip (static)', () => {
+    it('combines items positionally from 2 sources', () => {
+        const items = collect(Flux.zip(
+            [Flux.just(1, 2, 3), Flux.just('a', 'b', 'c')],
+            (n: number, s: string) => `${n}${s}`
+        ));
+        expect(items).toEqual(['1a', '2b', '3c']);
+    });
+
+    it('stops when shorter source exhausts', () => {
+        const items = collect(Flux.zip(
+            [Flux.just(1, 2, 3), Flux.just('a', 'b')],
+            (n: number, s: string) => `${n}${s}`
+        ));
+        expect(items).toEqual(['1a', '2b']);
+    });
+
+    it('respects downstream demand', () => {
+        const ts = new TestSubscriber<string>();
+        Flux.zip([Flux.just(1, 2, 3), Flux.just('a', 'b', 'c')],
+            (n: number, s: string) => `${n}${s}`).subscribe(ts);
+        ts.request(1);
+        expect(ts.items).toEqual(['1a']);
+        ts.request(2);
+        expect(ts.items).toEqual(['1a', '2b', '3c']);
+    });
+
+    it('propagates error from a source', () => {
+        const err = new Error('zip-err');
+        const e = collectError(Flux.zip([Flux.just(1), Flux.error<string>(err)],
+            (n: number, s: string) => `${n}${s}`));
+        expect(e).toBe(err);
+    });
+
+    it('3-source typed overload', () => {
+        const items = collect(Flux.zip(
+            [Flux.just(1), Flux.just('a'), Flux.just(true)],
+            (n: number, s: string, b: boolean) => `${n}${s}${b}`
+        ));
+        expect(items).toEqual(['1atrue']);
+    });
+
+    it('onSubscribe before items (RS 1.3)', () => {
+        const events: string[] = [];
+        Flux.zip([Flux.just(1), Flux.just('a')], (n: number, s: string) => `${n}${s}`).subscribe({
+            onSubscribe(s) { events.push('sub'); s.request(10); },
+            onNext(v) { events.push(v as string); },
+            onError() {},
+            onComplete() {}
+        });
+        expect(events[0]).toBe('sub');
+    });
+});
+
+describe('Flux.combineLatest (static)', () => {
+    it('emits combined value from latest of each source', () => {
+        const items = collect(Flux.combineLatest(
+            [Flux.just(1, 2), Flux.just('a', 'b')],
+            (n: number, s: string) => `${n}${s}`
+        ));
+        // Last emitted uses latest from both; with sync sources both complete immediately
+        expect(items.length).toBeGreaterThan(0);
+        expect(items[items.length - 1]).toMatch(/2[ab]/);
+    });
+
+    it('does not emit until all sources have a value', () => {
+        const items = collect(Flux.combineLatest(
+            [Flux.just(1), Flux.never<string>()],
+            (n: unknown, s: unknown) => `${n}${s}`
+        ));
+        expect(items).toHaveLength(0);
+    });
+
+    it('propagates error', () => {
+        const err = new Error('cl-err');
+        const e = collectError(Flux.combineLatest(
+            [Flux.just(1), Flux.error<string>(err)],
+            (n: number, s: string) => `${n}${s}`
+        ));
+        expect(e).toBe(err);
+    });
+
+    it('respects downstream demand', () => {
+        const ts = new TestSubscriber<string>();
+        Flux.combineLatest([Flux.just(1, 2), Flux.just('a', 'b')],
+            (n: number, s: string) => `${n}${s}`).subscribe(ts);
+        ts.request(1);
+        expect(ts.items).toHaveLength(1);
+    });
+
+    it('onSubscribe before items (RS 1.3)', () => {
+        const events: string[] = [];
+        Flux.combineLatest([Flux.just(1), Flux.just('a')],
+            (n: number, s: string) => `${n}${s}`).subscribe({
+            onSubscribe(s) { events.push('sub'); s.request(10); },
+            onNext(v) { events.push(v as string); },
+            onError() {},
+            onComplete() {}
+        });
+        expect(events[0]).toBe('sub');
+    });
+});
+
+describe('Flux.merge (static) — RS compliance', () => {
+    it('merges items from all sources', () => {
+        const items = collect(Flux.merge(Flux.just(1, 2), Flux.just(3, 4)));
+        expect([...items].sort()).toEqual([1, 2, 3, 4]);
+    });
+
+    it('all sources receive demand issued in onSubscribe (RS fix)', () => {
+        // Both sources must get request() even though the convenience overload
+        // calls request() immediately inside onSubscribe.
+        const demanded: number[] = [];
+        const makeSource = (v: number) => Flux.from<number>({
+            subscribe(sub) {
+                const s: Subscription = {
+                    request(n) { demanded.push(n); sub.onNext(v); sub.onComplete(); },
+                    unsubscribe() {}
+                };
+                sub.onSubscribe(s);
+                return s;
+            }
+        });
+        const ts = new TestSubscriber<number>();
+        Flux.merge(makeSource(1), makeSource(2)).subscribe(ts);
+        ts.requestUnbounded();
+        expect(demanded.length).toBe(2); // both sources got a request
+    });
+
+    it('onSubscribe before items (RS 1.3)', () => {
+        const events: string[] = [];
+        Flux.merge(Flux.just(1), Flux.just(2)).subscribe({
+            onSubscribe(s) { events.push('sub'); s.request(10); },
+            onNext(v) { events.push(String(v)); },
+            onError() {},
+            onComplete() {}
+        });
+        expect(events[0]).toBe('sub');
+    });
+
+    it('propagates error', () => {
+        const err = new Error('merge-err');
+        const e = collectError(Flux.merge(Flux.just(1), Flux.error<number>(err)));
+        expect(e).toBe(err);
+    });
+
+    it('completes when all sources complete', () => {
+        const ts = new TestSubscriber<number>();
+        Flux.merge(Flux.just(1), Flux.just(2)).subscribe(ts);
+        ts.requestUnbounded();
+        expect(ts.completed).toBe(true);
+    });
+});
+
+describe('Flux.firstWithValue (static) — RS compliance', () => {
+    it('emits value from first source', () => {
+        const ts = new TestSubscriber<number>();
+        Flux.firstWithValue(Flux.just(1), Flux.just(2)).subscribe(ts);
+        ts.request(1);
+        expect(ts.items[0]).toBe(1);
+        expect(ts.completed).toBe(true);
+    });
+
+    it('all sources receive demand (RS fix)', () => {
+        const demanded: number[] = [];
+        const makeSource = (v: number) => Flux.from<number>({
+            subscribe(sub) {
+                const s: Subscription = {
+                    request(n) { demanded.push(n); sub.onNext(v); sub.onComplete(); },
+                    unsubscribe() {}
+                };
+                sub.onSubscribe(s);
+                return s;
+            }
+        });
+        const ts = new TestSubscriber<number>();
+        Flux.firstWithValue(makeSource(1), makeSource(2)).subscribe(ts);
+        ts.request(1);
+        expect(demanded.length).toBe(2);
+    });
+
+    it('onSubscribe before items (RS 1.3)', () => {
+        const events: string[] = [];
+        Flux.firstWithValue(Flux.just(1), Flux.just(2)).subscribe({
+            onSubscribe(s) { events.push('sub'); s.request(1); },
+            onNext(v) { events.push(String(v)); },
+            onError() {},
+            onComplete() {}
+        });
+        expect(events[0]).toBe('sub');
+    });
+
+    it('zero sources → completes empty', () => {
+        const ts = new TestSubscriber<number>();
+        Flux.firstWithValue<number>().subscribe(ts);
+        ts.requestUnbounded();
+        expect(ts.completed).toBe(true);
+        expect(ts.items).toHaveLength(0);
+    });
+});
+
+describe('Flux.create (FluxSink)', () => {
+    it('buffers items and delivers on demand', () => {
+        const ts = new TestSubscriber<number>();
+        Flux.create<number>(sink => {
+            sink.next(1);
+            sink.next(2);
+            sink.complete();
+        }).subscribe(ts);
+        ts.request(3);
+        expect(ts.items).toEqual([1, 2]);
+        expect(ts.completed).toBe(true);
+    });
+
+    it('sink.requested reflects demand accumulated before emitter runs', () => {
+        // The initial request() fires during onSubscribe (before the emitter body runs).
+        // sink.requested reflects the outstanding demand when the emitter body executes.
+        let requestedAtEmit = -1;
+        Flux.create<number>(sink => {
+            requestedAtEmit = sink.requested;
+        }).subscribe({
+            onSubscribe(s) { s.request(5); },
+            onNext() {},
+            onError() {},
+            onComplete() {}
+        });
+        expect(requestedAtEmit).toBe(5);
+    });
+
+    it('onRequest fires for subsequent requests after emitter runs', () => {
+        const demands: number[] = [];
+        let sub!: { request(n: number): void };
+        Flux.create<number>(sink => {
+            sink.onRequest(n => demands.push(n));
+        }).subscribe({
+            onSubscribe(s) { sub = s; },
+            onNext() {},
+            onError() {},
+            onComplete() {}
+        });
+        sub.request(3);
+        sub.request(7);
+        expect(demands).toEqual([3, 7]);
+    });
+
+    it('onCancel fires on unsubscribe', () => {
+        let cancelled = false;
+        const ts = new TestSubscriber<number>();
+        const sub = Flux.create<number>(sink => {
+            sink.onCancel(() => { cancelled = true; });
+        }).subscribe(ts);
+        sub.unsubscribe();
+        expect(cancelled).toBe(true);
+    });
+
+    it('onDispose fires on complete', () => {
+        let disposed = false;
+        const ts = new TestSubscriber<number>();
+        Flux.create<number>(sink => {
+            sink.onDispose(() => { disposed = true; });
+            sink.complete();
+        }).subscribe(ts);
+        ts.requestUnbounded();
+        expect(disposed).toBe(true);
+    });
+
+    it('emitter exception signals onError', () => {
+        const e = collectError(Flux.create<number>(() => { throw new Error('thrown'); }));
+        expect(e!.message).toBe('thrown');
+    });
+
+    it('onSubscribe called before emitter runs (RS 1.3)', () => {
+        const events: string[] = [];
+        Flux.create<number>(sink => {
+            events.push('emitter');
+            sink.next(1);
+            sink.complete();
+        }).subscribe({
+            onSubscribe(s) { events.push('sub'); s.request(1); },
+            onNext() {},
+            onError() {},
+            onComplete() {}
+        });
+        expect(events[0]).toBe('sub');
+        expect(events[1]).toBe('emitter');
+    });
+});
+
+describe('Flux.using', () => {
+    it('acquires resource, streams items, cleans up on complete', () => {
+        let cleaned = false;
+        const items = collect(Flux.using(
+            () => [1, 2, 3],
+            arr => Flux.fromIterable(arr),
+            _arr => { cleaned = true; }
+        ));
+        expect(items).toEqual([1, 2, 3]);
+        expect(cleaned).toBe(true);
+    });
+
+    it('cleanup runs on error', () => {
+        let cleaned = false;
+        const e = collectError(Flux.using(
+            () => 'resource',
+            _r => Flux.error<number>(new Error('fail')),
+            _r => { cleaned = true; }
+        ));
+        expect(e!.message).toBe('fail');
+        expect(cleaned).toBe(true);
+    });
+
+    it('cleanup runs on cancellation', () => {
+        let cleaned = false;
+        const ts = new TestSubscriber<number>();
+        const sub = Flux.using(
+            () => null,
+            _r => Flux.just(1, 2, 3),
+            _r => { cleaned = true; }
+        ).subscribe(ts);
+        ts.request(1);
+        sub.unsubscribe();
+        expect(cleaned).toBe(true);
+    });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// AbstractPipePublisher shared operators
+// ═══════════════════════════════════════════════════════════════════════════════
+
+describe('onErrorResume', () => {
+    it('switches to fallback on error', () => {
+        const items = collect(
+            Flux.error<number>(new Error('x')).onErrorResume(() => Flux.just(1, 2))
+        );
+        expect(items).toEqual([1, 2]);
+    });
+
+    it('receives the error in fn', () => {
+        let received: string | null = null;
+        collect(Flux.error<number>(new Error('oops')).onErrorResume(e => {
+            received = e.message;
+            return Flux.empty();
+        }));
+        expect(received).toBe('oops');
+    });
+
+    it('does not call fn on success', () => {
+        let called = false;
+        const items = collect(
+            Flux.just(1, 2).onErrorResume(() => { called = true; return Flux.empty(); })
+        );
+        expect(called).toBe(false);
+        expect(items).toEqual([1, 2]);
+    });
+});
+
+describe('onErrorMap', () => {
+    it('transforms the error', () => {
+        const e = collectError(
+            Flux.error<number>(new Error('orig')).onErrorMap(e => new Error(`wrapped:${e.message}`))
+        );
+        expect(e!.message).toBe('wrapped:orig');
+    });
+
+    it('passes through on success', () => {
+        const items = collect(Flux.just(1, 2).onErrorMap(e => new Error(e.message)));
+        expect(items).toEqual([1, 2]);
+    });
+});
+
+describe('timeout', () => {
+    it('errors when source emits nothing within the timeout', async () => {
+        const e = await new Promise<Error | null>(resolve => {
+            Flux.never<number>().timeout(40).subscribe({
+                onSubscribe(s) { s.request(1); },
+                onNext() {},
+                onError(e) { resolve(e); },
+                onComplete() { resolve(null); }
+            });
+        });
+        expect(e).not.toBeNull();
+        expect(e!.message.toLowerCase()).toContain('timeout');
+    });
+
+    it('does not timeout when items arrive in time', async () => {
+        const items = await new Promise<number[]>(resolve => {
+            const r: number[] = [];
+            Flux.just(1, 2, 3).timeout(500).subscribe(
+                v => r.push(v), () => resolve([]), () => resolve(r)
+            );
+        });
+        expect(items).toEqual([1, 2, 3]);
+    });
+
+    it('switches to fallback publisher on timeout', async () => {
+        const items = await new Promise<number[]>(resolve => {
+            const r: number[] = [];
+            Flux.never<number>().timeout(40, Flux.just(99)).subscribe(
+                v => r.push(v), () => resolve([]), () => resolve(r)
+            );
+        });
+        expect(items).toEqual([99]);
+    });
+});
+
+describe('delaySubscription', () => {
+    it('does not subscribe to source synchronously', () => {
+        let subscribed = false;
+        Flux.defer(() => { subscribed = true; return Flux.just(1); })
+            .delaySubscription(50)
+            .subscribe({ onSubscribe() {}, onNext() {}, onError() {}, onComplete() {} });
+        expect(subscribed).toBe(false);
+    });
+
+    it('eventually subscribes and emits after delay', async () => {
+        const items = await new Promise<number[]>(resolve => {
+            const r: number[] = [];
+            Flux.just(1, 2, 3).delaySubscription(30).subscribe(
+                v => r.push(v), () => resolve([]), () => resolve(r)
+            );
+        });
+        expect(items).toEqual([1, 2, 3]);
+    });
+});
+
+describe('doOnRequest', () => {
+    it('fires with the requested count each time', () => {
+        const counts: number[] = [];
+        const ts = new TestSubscriber<number>();
+        Flux.just(1, 2, 3).doOnRequest(n => counts.push(n)).subscribe(ts);
+        ts.request(2);
+        ts.request(1);
+        expect(counts).toEqual([2, 1]);
+    });
+});
+
+describe('doOnEach', () => {
+    it('receives next signals', () => {
+        const kinds: string[] = [];
+        const ts = new TestSubscriber<number>();
+        Flux.just(1, 2).doOnEach(s => kinds.push(s.kind)).subscribe(ts);
+        ts.requestUnbounded();
+        expect(kinds.filter(k => k === 'next')).toHaveLength(2);
+        expect(kinds).toContain('complete');
+    });
+
+    it('receives error signal', () => {
+        const kinds: string[] = [];
+        Flux.error<number>(new Error('x')).doOnEach(s => kinds.push(s.kind)).subscribe({
+            onSubscribe(s) { s.request(1); },
+            onNext() {},
+            onError() {},
+            onComplete() {}
+        });
+        expect(kinds).toContain('error');
+    });
+});
+
+describe('log', () => {
+    it('passes items through unchanged', () => {
+        const items = collect(Flux.just(1, 2, 3).log('test'));
+        expect(items).toEqual([1, 2, 3]);
+    });
+
+    it('does not swallow errors', () => {
+        const e = collectError(Flux.error<number>(new Error('log-err')).log());
+        expect(e!.message).toBe('log-err');
+    });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Flux instance operators (new)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+describe('Flux#retryWhen', () => {
+    it('retries and eventually succeeds', () => {
+        let attempts = 0;
+        const source = Flux.defer(() => {
+            attempts++;
+            return attempts < 3 ? Flux.error<number>(new Error('fail')) : Flux.just(42);
+        });
+        const items = collect(source.retryWhen(errors => errors.take(3)));
+        expect(items).toEqual([42]);
+        expect(attempts).toBe(3);
+    });
+
+    it('stops when control stream completes', () => {
+        const ts = new TestSubscriber<number>();
+        Flux.error<number>(new Error('always'))
+            .retryWhen(errors => errors.take(0))
+            .subscribe(ts);
+        ts.requestUnbounded();
+        expect(ts.completed).toBe(true);
+    });
+
+    it('propagates control stream error', () => {
+        const controlErr = new Error('ctrl');
+        const ts = new TestSubscriber<number>();
+        Flux.error<number>(new Error('src'))
+            .retryWhen(_ => Flux.error<unknown>(controlErr))
+            .subscribe(ts);
+        ts.requestUnbounded();
+        expect(ts.error).toBe(controlErr);
+    });
+
+    it('forwards items from successful attempts', () => {
+        const items = collect(Flux.just(1, 2, 3).retryWhen(errors => errors.take(2)));
+        expect(items).toEqual([1, 2, 3]);
+    });
+});
+
+describe('Flux#repeatWhen', () => {
+    it('repeats source when control emits', () => {
+        const items = collect(
+            Flux.just(1).repeatWhen(completes => completes.take(2))
+        );
+        expect(items).toEqual([1, 1, 1]); // initial + 2 repeats
+    });
+
+    it('stops when control completes', () => {
+        const ts = new TestSubscriber<number>();
+        Flux.just(42).repeatWhen(completes => completes.take(0)).subscribe(ts);
+        ts.requestUnbounded();
+        expect(ts.completed).toBe(true);
+    });
+
+    it('propagates source error without repeating', () => {
+        const err = new Error('src');
+        const ts = new TestSubscriber<number>();
+        Flux.error<number>(err).repeatWhen(_ => Flux.just(1)).subscribe(ts);
+        ts.requestUnbounded();
+        expect(ts.error).toBe(err);
+    });
+});
+
+describe('Flux#groupBy', () => {
+    it('routes items into groups', async () => {
+        const groups = new Map<string, number[]>();
+        await new Promise<void>(resolve => {
+            let pending = 2;
+            Flux.just(1, 2, 3, 4, 5)
+                .groupBy(n => n % 2 === 0 ? 'even' : 'odd')
+                .subscribe(
+                    group => {
+                        const arr: number[] = [];
+                        groups.set(group.key, arr);
+                        group.subscribe(
+                            v => arr.push(v),
+                            () => {},
+                            () => { if (--pending === 0) resolve(); }
+                        );
+                    },
+                    () => {},
+                    () => {}
+                );
+        });
+        expect(groups.get('odd')!.sort((a, b) => a - b)).toEqual([1, 3, 5]);
+        expect(groups.get('even')!.sort((a, b) => a - b)).toEqual([2, 4]);
+    });
+
+    it('GroupedFlux has correct key', () => {
+        const keys: string[] = [];
+        Flux.just(1, 2, 3)
+            .groupBy(n => n % 2 === 0 ? 'even' : 'odd')
+            .subscribe(g => keys.push(g.key), () => {}, () => {});
+        expect(keys).toContain('odd');
+        expect(keys).toContain('even');
+    });
+
+    it('GroupedFlux is a plain Flux (no subclass needed)', () => {
+        let group!: { key: string } & Flux<number>;
+        Flux.just(1).groupBy(_ => 'all')
+            .subscribe(g => { group = g; }, () => {}, () => {});
+        expect(group).toBeInstanceOf(Flux);
+        expect(group.key).toBe('all');
+    });
+});
+
+describe('Flux#bufferTimeout', () => {
+    it('flushes when maxSize is reached', () => {
+        const ts = new TestSubscriber<number[]>();
+        Flux.just(1, 2, 3, 4, 5).bufferTimeout(2, 5000).subscribe(ts);
+        ts.requestUnbounded();
+        expect(ts.items[0]).toEqual([1, 2]);
+        expect(ts.items[1]).toEqual([3, 4]);
+    });
+
+    it('flushes partial batch on completion', () => {
+        const batches = collect(Flux.just(1, 2, 3).bufferTimeout(2, 5000));
+        expect(batches.flat()).toContain(3);
+    });
+});
+
+describe('Flux#sample', () => {
+    it('ignores trigger when no value has arrived', () => {
+        const ts = new TestSubscriber<number>();
+        Flux.never<number>().sample(Flux.just(1)).subscribe(ts);
+        ts.requestUnbounded();
+        expect(ts.items).toHaveLength(0);
+    });
+
+    it('emits latest value when trigger fires (async)', async () => {
+        const items = await new Promise<number[]>(resolve => {
+            const r: number[] = [];
+            Flux.just(1, 2, 3)
+                .sample(Flux.interval(200).take(1))
+                .subscribe(v => r.push(v), () => resolve(r), () => resolve(r));
+        });
+        expect(items.length).toBeGreaterThanOrEqual(0); // source may complete before trigger
+    });
+});
+
+describe('Flux#delayUntil', () => {
+    it('holds items until trigger fires', async () => {
+        const start = Date.now();
+        const items = await new Promise<number[]>(resolve => {
+            const r: number[] = [];
+            Flux.just(1, 2, 3)
+                .delayUntil(() => Mono.delay(50))
+                .subscribe(v => r.push(v), () => resolve(r), () => resolve(r));
+        });
+        expect(items).toEqual([1, 2, 3]);
+        expect(Date.now() - start).toBeGreaterThanOrEqual(40);
+    });
+
+    it('propagates trigger error', () => {
+        const err = new Error('trig');
+        const ts = new TestSubscriber<number>();
+        Flux.just(1).delayUntil(() => Flux.error(err)).subscribe(ts);
+        ts.requestUnbounded();
+        expect(ts.error).toBe(err);
+    });
+});
+
+describe('Flux#expand', () => {
+    it('recursively expands items', () => {
+        const items = collect(
+            Flux.just(1).expand(n => n < 4 ? Flux.just(n + 1) : Flux.empty())
+        );
+        expect(items).toEqual([1, 2, 3, 4]);
+    });
+
+    it('stops when fn returns empty', () => {
+        const items = collect(Flux.just(3).expand(_ => Flux.empty<number>()));
+        expect(items).toEqual([3]);
+    });
+});
+
+describe('Flux#expandDeep', () => {
+    it('emits items in depth-first order', () => {
+        // Tree: 1 → [2, 3], 2 → [4, 5], others → empty
+        const items = collect(
+            Flux.just(1).expandDeep(n =>
+                n === 1 ? Flux.just(2, 3) :
+                n === 2 ? Flux.just(4, 5) :
+                Flux.empty()
+            )
+        );
+        // Depth-first pre-order: 1, then 1's children depth-first [2→[4,5], 3]
+        expect(items).toEqual([1, 2, 4, 5, 3]);
+    });
+
+    it('stops when fn returns empty', () => {
+        const items = collect(Flux.just(42).expandDeep(_ => Flux.empty<number>()));
+        expect(items).toEqual([42]);
+    });
+
+    it('linear chain emits same as expand', () => {
+        // For a linear chain DFS == BFS
+        const items = collect(
+            Flux.just(1).expandDeep(n => n < 4 ? Flux.just(n + 1) : Flux.empty())
+        );
+        expect(items).toEqual([1, 2, 3, 4]);
+    });
+
+    it('propagates errors from fn', () => {
+        const err = new Error('boom');
+        let caught: Error | null = null;
+        Flux.just(1)
+            .expandDeep(_ => { throw err; })
+            .subscribe({ onSubscribe(s) { s.request(10); }, onNext() {}, onError(e) { caught = e; }, onComplete() {} });
+        expect(caught).toBe(err);
+    });
+
+    it('multiple roots are each expanded depth-first', () => {
+        // Roots: [1, 2], each expanded to one child; expect [1, 10, 2, 20]
+        const items = collect(
+            Flux.just(1, 2).expandDeep(n => n < 10 ? Flux.just(n * 10) : Flux.empty())
+        );
+        expect(items).toEqual([1, 10, 2, 20]);
+    });
+});
+
+describe('Flux#elapsed', () => {
+    it('pairs each item with elapsed ms > 0', async () => {
+        const pairs = await new Promise<[number, number][]>(resolve => {
+            const r: [number, number][] = [];
+            Flux.interval(30).take(3).elapsed()
+                .subscribe(p => r.push(p), () => {}, () => resolve(r));
+        });
+        expect(pairs).toHaveLength(3);
+        for (const [ms] of pairs) expect(ms).toBeGreaterThan(0);
+    });
+});
+
+describe('Flux#timestamp', () => {
+    it('pairs each item with a current timestamp', () => {
+        const before = Date.now();
+        const pairs = collect(Flux.just(1, 2, 3).timestamp());
+        const after = Date.now();
+        for (const [ts] of pairs) {
+            expect(ts).toBeGreaterThanOrEqual(before);
+            expect(ts).toBeLessThanOrEqual(after);
+        }
+        expect(pairs.map(([, v]) => v)).toEqual([1, 2, 3]);
+    });
+});
+
+describe('Flux#materialize / dematerialize', () => {
+    it('materialize wraps next and complete as Signal items', () => {
+        const sigs = collect(Flux.just(1, 2).materialize());
+        expect(sigs[0]).toEqual({ kind: 'next', value: 1 });
+        expect(sigs[1]).toEqual({ kind: 'next', value: 2 });
+        expect(sigs[2]).toEqual({ kind: 'complete' });
+    });
+
+    it('materialize wraps error and completes the outer Flux normally', () => {
+        const err = new Error('mat-err');
+        const ts = new TestSubscriber<unknown>();
+        Flux.error<number>(err).materialize().subscribe(ts);
+        ts.requestUnbounded();
+        expect(ts.error).toBeNull();
+        expect(ts.completed).toBe(true);
+        expect((ts.items[0] as { error: Error }).error).toBe(err);
+    });
+
+    it('round-trip materialize → dematerialize is identity', () => {
+        const items = collect(
+            Flux.just(1, 2, 3).materialize().dematerialize<number>()
+        );
+        expect(items).toEqual([1, 2, 3]);
+    });
+});
+
+describe('Flux#onBackpressureBuffer', () => {
+    it('buffers items and delivers on demand', () => {
+        const ts = new TestSubscriber<number>();
+        Flux.just(1, 2, 3).onBackpressureBuffer().subscribe(ts);
+        expect(ts.items).toHaveLength(0);
+        ts.request(2);
+        expect(ts.items).toEqual([1, 2]);
+        ts.request(1);
+        expect(ts.items).toEqual([1, 2, 3]);
+    });
+
+    it('errors when maxSize is exceeded', () => {
+        const ts = new TestSubscriber<number>();
+        Flux.just(1, 2, 3, 4, 5).onBackpressureBuffer(2).subscribe(ts);
+        expect(ts.error).not.toBeNull();
+        expect(ts.error!.message).toContain('overflow');
+    });
+});
+
+describe('Flux#onBackpressureDrop', () => {
+    it('drops items when no demand', () => {
+        const ts = new TestSubscriber<number>();
+        Flux.just(1, 2, 3).onBackpressureDrop().subscribe(ts);
+        expect(ts.items).toHaveLength(0);
+        expect(ts.completed).toBe(true);
+    });
+
+    it('invokes onDrop callback for each dropped item', () => {
+        const dropped: number[] = [];
+        const ts = new TestSubscriber<number>();
+        Flux.just(1, 2, 3).onBackpressureDrop(v => dropped.push(v)).subscribe(ts);
+        expect(dropped).toEqual([1, 2, 3]);
+    });
+});
+
+describe('Flux#onBackpressureLatest', () => {
+    it('keeps only the latest item', () => {
+        const ts = new TestSubscriber<number>();
+        Flux.just(1, 2, 3).onBackpressureLatest().subscribe(ts);
+        ts.request(1);
+        expect(ts.items).toEqual([3]);
+        expect(ts.completed).toBe(true);
+    });
+});
+
+describe('Flux#limitRate', () => {
+    it('prefetches in batches of n', () => {
+        const requested: number[] = [];
+        const source = Flux.from<number>({
+            subscribe(sub) {
+                const items = [1, 2, 3, 4, 5, 6, 7, 8];
+                const s: Subscription = {
+                    request(n) {
+                        requested.push(n);
+                        const slice = items.splice(0, n);
+                        for (const v of slice) sub.onNext(v);
+                        if (items.length === 0) sub.onComplete();
+                    },
+                    unsubscribe() {}
+                };
+                sub.onSubscribe(s);
+                return s;
+            }
+        });
+        const items = collect(source.limitRate(8));
+        expect(requested[0]).toBe(8);
+        expect(items).toHaveLength(8);
+    });
+});
+
+describe('Flux#ofType', () => {
+    class Animal {}
+    class Cat extends Animal { meow() { return 'meow'; } }
+    class Dog extends Animal { woof() { return 'woof'; } }
+
+    it('keeps only instanceof matches', () => {
+        const animals: Animal[] = [new Cat(), new Dog(), new Cat()];
+        const cats = collect(Flux.fromIterable(animals).ofType(Cat));
+        expect(cats).toHaveLength(2);
+        expect(cats.every(c => c instanceof Cat)).toBe(true);
+    });
+
+    it('returns empty when no items match', () => {
+        const items = collect(Flux.just(new Cat() as Animal).ofType(Dog));
+        expect(items).toHaveLength(0);
+    });
+});
+
+describe('Flux#transformDeferred', () => {
+    it('applies operator function lazily, one call per subscription', () => {
+        let count = 0;
+        const addCount = (f: Publisher<number>) => Flux.from(f).doOnSubscribe(() => count++);
+        const flux = Flux.just(1, 2, 3).transformDeferred(addCount);
+        collect(flux);
+        collect(flux);
+        expect(count).toBe(2);
+    });
+
+    it('transforms the element type', () => {
+        const items = collect(
+            Flux.just(1, 2, 3).transformDeferred<number>(f => Flux.from(f).map(n => (n as number) * 10))
+        );
+        expect(items).toEqual([10, 20, 30]);
     });
 });

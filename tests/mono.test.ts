@@ -908,3 +908,361 @@ describe('Mono.flatMap with schedulers', () => {
         expect(received).toEqual([0, 1, 2]);
     });
 });
+
+// ---------------------------------------------------------------------------
+// Mono.create
+// ---------------------------------------------------------------------------
+
+describe('Mono.create', () => {
+    test('is an alias for Mono.generate — emits value', () => {
+        const sub = new TestSubscriber<number>().subscribeTo(
+            Mono.create<number>(sink => sink.next(7))
+        );
+        expect(sub.values).toEqual([7]);
+        expect(sub.completed).toBe(true);
+    });
+
+    test('is an alias for Mono.generate — completes empty', () => {
+        const sub = new TestSubscriber<number>().subscribeTo(
+            Mono.create<number>(sink => sink.complete())
+        );
+        expect(sub.values).toHaveLength(0);
+        expect(sub.completed).toBe(true);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Mono.delay
+// ---------------------------------------------------------------------------
+
+describe('Mono.delay', () => {
+    test('does not emit synchronously', () => {
+        const sub = new TestSubscriber<number>().subscribeTo(Mono.delay(50), 1);
+        expect(sub.values).toHaveLength(0);
+    });
+
+    test('emits 0 after the given delay', async () => {
+        const result = await Mono.delay(50).toPromise();
+        expect(result).toBe(0);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Mono.fromCallable
+// ---------------------------------------------------------------------------
+
+describe('Mono.fromCallable', () => {
+    test('calls factory at subscription time and emits result', () => {
+        let calls = 0;
+        const mono = Mono.fromCallable(() => { calls++; return 42; });
+        expect(calls).toBe(0);
+        const sub = new TestSubscriber<number>().subscribeTo(mono);
+        expect(calls).toBe(1);
+        expect(sub.values).toEqual([42]);
+    });
+
+    test('wraps thrown exceptions as onError', () => {
+        const sub = new TestSubscriber<number>().subscribeTo(
+            Mono.fromCallable<number>(() => { throw new Error('sync-throw'); })
+        );
+        expect(sub.errors[0].message).toBe('sync-throw');
+    });
+
+    test('each subscription calls factory independently', () => {
+        let calls = 0;
+        const mono = Mono.fromCallable(() => ++calls);
+        new TestSubscriber<number>().subscribeTo(mono);
+        new TestSubscriber<number>().subscribeTo(mono);
+        expect(calls).toBe(2);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Mono.firstWithValue
+// ---------------------------------------------------------------------------
+
+describe('Mono.firstWithValue', () => {
+    test('emits value from first resolving Mono', () => {
+        const sub = new TestSubscriber<number>().subscribeTo(
+            Mono.firstWithValue(Mono.just(1), Mono.just(2))
+        );
+        expect(sub.values[0]).toBe(1);
+    });
+
+    test('skips empty Mono and takes value from next', () => {
+        const sub = new TestSubscriber<number>().subscribeTo(
+            Mono.firstWithValue(Mono.empty<number>(), Mono.just(42))
+        );
+        expect(sub.values).toEqual([42]);
+    });
+
+    test('completes empty when all sources are empty', () => {
+        const sub = new TestSubscriber<number>().subscribeTo(
+            Mono.firstWithValue(Mono.empty<number>(), Mono.empty<number>())
+        );
+        expect(sub.values).toHaveLength(0);
+        expect(sub.completed).toBe(true);
+    });
+
+    test('propagates error from first erroring source', () => {
+        const err = new Error('race-err');
+        const sub = new TestSubscriber<number>().subscribeTo(
+            Mono.firstWithValue(Mono.error<number>(err), Mono.just(5))
+        );
+        expect(sub.errors).toEqual([err]);
+    });
+
+    test('returns empty Mono for zero sources', () => {
+        const sub = new TestSubscriber<number>().subscribeTo(
+            Mono.firstWithValue<number>()
+        );
+        expect(sub.values).toHaveLength(0);
+        expect(sub.completed).toBe(true);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Mono#doOnSuccess
+// ---------------------------------------------------------------------------
+
+describe('Mono#doOnSuccess', () => {
+    test('side effect fires with emitted value', () => {
+        const seen: number[] = [];
+        const sub = new TestSubscriber<number>().subscribeTo(
+            Mono.just(42).doOnSuccess(v => seen.push(v))
+        );
+        expect(seen).toEqual([42]);
+        expect(sub.values).toEqual([42]);
+    });
+
+    test('does not fire when Mono is empty', () => {
+        const seen: number[] = [];
+        new TestSubscriber<number>().subscribeTo(
+            Mono.empty<number>().doOnSuccess(v => seen.push(v))
+        );
+        expect(seen).toHaveLength(0);
+    });
+
+    test('exception in fn propagates as onError', () => {
+        const sub = new TestSubscriber<number>().subscribeTo(
+            Mono.just(1).doOnSuccess(() => { throw new Error('fn-throw'); })
+        );
+        expect(sub.errors[0].message).toBe('fn-throw');
+        expect(sub.values).toHaveLength(0);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Mono#onErrorComplete
+// ---------------------------------------------------------------------------
+
+describe('Mono#onErrorComplete', () => {
+    test('converts error to completion (no predicate)', () => {
+        const sub = new TestSubscriber<number>().subscribeTo(
+            Mono.error<number>(new Error('x')).onErrorComplete()
+        );
+        expect(sub.errors).toHaveLength(0);
+        expect(sub.completed).toBe(true);
+    });
+
+    test('predicate true — converts to completion', () => {
+        const sub = new TestSubscriber<number>().subscribeTo(
+            Mono.error<number>(new Error('match')).onErrorComplete(e => e.message === 'match')
+        );
+        expect(sub.completed).toBe(true);
+        expect(sub.errors).toHaveLength(0);
+    });
+
+    test('predicate false — re-propagates error', () => {
+        const err = new Error('no-match');
+        const sub = new TestSubscriber<number>().subscribeTo(
+            Mono.error<number>(err).onErrorComplete(e => e.message === 'other')
+        );
+        expect(sub.errors).toEqual([err]);
+        expect(sub.completed).toBe(false);
+    });
+
+    test('does not affect normal emission', () => {
+        const sub = new TestSubscriber<number>().subscribeTo(
+            Mono.just(5).onErrorComplete()
+        );
+        expect(sub.values).toEqual([5]);
+        expect(sub.completed).toBe(true);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Mono#thenReturn
+// ---------------------------------------------------------------------------
+
+describe('Mono#thenReturn', () => {
+    test('replaces emitted value with the given value', () => {
+        const sub = new TestSubscriber<number>().subscribeTo(
+            Mono.just('ignored').thenReturn(99)
+        );
+        expect(sub.values).toEqual([99]);
+        expect(sub.completed).toBe(true);
+    });
+
+    test('works when source is empty — still emits the value', () => {
+        const sub = new TestSubscriber<string>().subscribeTo(
+            Mono.empty<void>().thenReturn('hello')
+        );
+        expect(sub.values).toEqual(['hello']);
+    });
+
+    test('propagates error without emitting the value', () => {
+        const err = new Error('src-err');
+        const sub = new TestSubscriber<string>().subscribeTo(
+            Mono.error<void>(err).thenReturn('x')
+        );
+        expect(sub.errors).toEqual([err]);
+        expect(sub.values).toHaveLength(0);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Mono#delayElement
+// ---------------------------------------------------------------------------
+
+describe('Mono#delayElement', () => {
+    test('delays the emitted value', async () => {
+        const start = Date.now();
+        const result = await Mono.just('hi').delayElement(80).toPromise();
+        expect(result).toBe('hi');
+        expect(Date.now() - start).toBeGreaterThanOrEqual(60);
+    });
+
+    test('does not emit synchronously', () => {
+        const sub = new TestSubscriber<number>().subscribeTo(
+            Mono.just(1).delayElement(200), 1
+        );
+        expect(sub.values).toHaveLength(0);
+    });
+
+    test('propagates error without delay', () => {
+        const err = new Error('early-err');
+        const sub = new TestSubscriber<number>().subscribeTo(
+            Mono.error<number>(err).delayElement(200)
+        );
+        expect(sub.errors).toEqual([err]);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Mono#delayUntil
+// ---------------------------------------------------------------------------
+
+describe('Mono#delayUntil', () => {
+    test('holds value until trigger emits', async () => {
+        const result = await Mono.just(7)
+            .delayUntil(() => Mono.delay(50))
+            .toPromise();
+        expect(result).toBe(7);
+    });
+
+    test('propagates trigger error and discards the value', () => {
+        const err = new Error('trigger-fail');
+        const sub = new TestSubscriber<number>().subscribeTo(
+            Mono.just(1).delayUntil(() => Mono.error(err))
+        );
+        expect(sub.errors).toEqual([err]);
+        expect(sub.values).toHaveLength(0);
+    });
+
+    test('does not invoke triggerFn when source is empty', () => {
+        let called = false;
+        const sub = new TestSubscriber<number>().subscribeTo(
+            Mono.empty<number>().delayUntil(() => { called = true; return Mono.just(0); })
+        );
+        expect(called).toBe(false);
+        expect(sub.completed).toBe(true);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Mono#or
+// ---------------------------------------------------------------------------
+
+describe('Mono#or', () => {
+    test('uses primary value when source emits', () => {
+        const sub = new TestSubscriber<number>().subscribeTo(
+            Mono.just(1).or(Mono.just(99))
+        );
+        expect(sub.values).toEqual([1]);
+    });
+
+    test('falls back to other when source is empty', () => {
+        const sub = new TestSubscriber<number>().subscribeTo(
+            Mono.empty<number>().or(Mono.just(99))
+        );
+        expect(sub.values).toEqual([99]);
+        expect(sub.completed).toBe(true);
+    });
+
+    test('propagates source error without subscribing to other', () => {
+        let otherSubscribed = false;
+        const err = new Error('src');
+        const sub = new TestSubscriber<number>().subscribeTo(
+            Mono.error<number>(err).or(Mono.defer(() => { otherSubscribed = true; return Mono.just(0); }))
+        );
+        expect(sub.errors).toEqual([err]);
+        expect(otherSubscribed).toBe(false);
+    });
+
+    test('other is empty — result is empty', () => {
+        const sub = new TestSubscriber<number>().subscribeTo(
+            Mono.empty<number>().or(Mono.empty<number>())
+        );
+        expect(sub.values).toHaveLength(0);
+        expect(sub.completed).toBe(true);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Mono#retryWhen
+// ---------------------------------------------------------------------------
+
+describe('Mono#retryWhen', () => {
+    test('retries and eventually succeeds', () => {
+        let attempt = 0;
+        const source = Mono.defer(() => {
+            attempt++;
+            return attempt < 3 ? Mono.error<number>(new Error('fail')) : Mono.just(42);
+        });
+        const sub = new TestSubscriber<number>().subscribeTo(
+            source.retryWhen(errors => errors.take(3))
+        );
+        expect(sub.values).toEqual([42]);
+        expect(attempt).toBe(3);
+    });
+
+    test('stops retrying when control stream completes', () => {
+        const err = new Error('always-fail');
+        const sub = new TestSubscriber<number>().subscribeTo(
+            Mono.error<number>(err).retryWhen(errors => errors.take(0))
+        );
+        expect(sub.completed).toBe(true);
+        expect(sub.values).toHaveLength(0);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Mono#toFuture
+// ---------------------------------------------------------------------------
+
+describe('Mono#toFuture', () => {
+    test('resolves with the emitted value', async () => {
+        const result = await Mono.just(123).toFuture();
+        expect(result).toBe(123);
+    });
+
+    test('resolves with null when Mono is empty', async () => {
+        const result = await Mono.empty<number>().toFuture();
+        expect(result).toBeNull();
+    });
+
+    test('rejects on error', async () => {
+        await expect(Mono.error(new Error('rej')).toFuture()).rejects.toThrow('rej');
+    });
+});
