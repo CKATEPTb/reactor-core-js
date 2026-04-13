@@ -706,10 +706,10 @@ The convenience callback overloads issue `request(Number.MAX_SAFE_INTEGER)` for 
 ```bash
 git clone https://github.com/CKATEPTb/reactor-core-ts.git
 cd reactor-core-ts
-pnpm install
+npm install
 
-pnpm run build   # compile
-pnpm test        # run all tests (Jest + TCK)
+npm run build   # compile
+npm run test    # run all tests (Jest + TCK)
 ```
 
 Feel free to open issues and submit pull requests.
@@ -720,4 +720,4 @@ Feel free to open issues and submit pull requests.
 
 LGPL-3.0-only. See [LICENSE.md](LICENSE.md) for details.
 
-**Author**: CKATEPTb
+**Author**: [CKATEPTb](https://github.com/CKATEPTb)
