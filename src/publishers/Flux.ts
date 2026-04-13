@@ -11,6 +11,8 @@ export class Flux<T> extends AbstractPipePublisher<T> implements PipePublisher<T
 
     protected constructor(source: Publisher<T>) { super(source); }
 
+    protected defaultDemand(): number { return Number.MAX_SAFE_INTEGER; }
+
     protected wrapSource(source: Publisher<T>): this {
         return new Flux<T>(source) as unknown as this;
     }

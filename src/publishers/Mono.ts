@@ -10,6 +10,8 @@ export class Mono<T> extends AbstractPipePublisher<T> implements PipePublisher<T
 
     protected constructor(source: Publisher<T>) { super(source); }
 
+    protected defaultDemand(): number { return 1; }
+
     protected wrapSource(source: Publisher<T>): this {
         return new Mono<T>(source) as unknown as this;
     }

@@ -19,8 +19,54 @@ export abstract class AbstractPipePublisher<T> implements Publisher<T> {
 
     protected constructor(protected readonly source: Publisher<T>) {}
 
-    subscribe(subscriber: Subscriber<T>): Subscription {
-        return this.source.subscribe(subscriber);
+    /**
+     * Default demand issued in the auto-request onSubscribe when using the
+     * convenience subscribe() overloads (no explicit Subscriber provided).
+     * Mono overrides this to 1; Flux overrides it to Number.MAX_SAFE_INTEGER.
+     */
+    protected abstract defaultDemand(): number;
+
+    /**
+     * Subscribe with a full Subscriber (existing contract — full demand control).
+     */
+    subscribe(subscriber: Subscriber<T>): Subscription;
+
+    /**
+     * Convenience overload — any combination of callbacks may be omitted.
+     * An auto-request of `defaultDemand()` is issued on subscribe so items
+     * start flowing immediately without a manual request() call.
+     *
+     * If `onError` is not provided, unhandled errors are re-thrown so they
+     * surface as uncaught exceptions rather than being silently swallowed.
+     *
+     * @example
+     * // Mono — requests 1 automatically
+     * Mono.just(42).subscribe(v => console.log(v));
+     *
+     * // Flux — requests unbounded automatically
+     * Flux.range(0, 5).subscribe(v => console.log(v), err => console.error(err));
+     */
+    subscribe(onNext?: (value: T) => void, onError?: (error: Error) => void, onComplete?: () => void): Subscription;
+
+    subscribe(
+        subscriberOrOnNext?: Subscriber<T> | ((value: T) => void),
+        onError?: (error: Error) => void,
+        onComplete?: () => void,
+    ): Subscription {
+        // Full Subscriber object — delegate unchanged (caller owns demand).
+        if (subscriberOrOnNext !== undefined && typeof subscriberOrOnNext === 'object') {
+            return this.source.subscribe(subscriberOrOnNext);
+        }
+
+        // Convenience path: wrap callbacks in a LambdaSubscriber that auto-requests.
+        const onNext = subscriberOrOnNext as ((value: T) => void) | undefined;
+        const demand = this.defaultDemand();
+        return this.source.subscribe({
+            onSubscribe(s) { s.request(demand); },
+            onNext:     onNext   ?? (() => {}),
+            onError:    onError  ?? ((e) => { throw e; }),
+            onComplete: onComplete ?? (() => {}),
+        });
     }
 
     /**
