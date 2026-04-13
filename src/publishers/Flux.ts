@@ -4,15 +4,15 @@ import {Sink} from "@/sinks/Sink";
 import {Mono} from "@/publishers/Mono";
 import {Subscriber} from "@/subscriptions/Subscriber";
 import {Subscription} from "@/subscriptions/Subscription";
-import {Scheduler} from "@/schedulers/Scheduler";
 import ReplayAllSink from "@/sinks/ReplayAllSink";
+import {AbstractPipePublisher} from "@/publishers/AbstractPipePublisher";
 
-export class Flux<T> implements PipePublisher<T> {
+export class Flux<T> extends AbstractPipePublisher<T> implements PipePublisher<T> {
 
-    protected constructor(private readonly source: Publisher<T>) {}
+    protected constructor(source: Publisher<T>) { super(source); }
 
-    subscribe(subscriber: Subscriber<T>): Subscription {
-        return this.source.subscribe(subscriber);
+    protected wrapSource(source: Publisher<T>): this {
+        return new Flux<T>(source) as unknown as this;
     }
 
     // ─────────────────────────── Static factories ────────────────────────────
@@ -608,51 +608,6 @@ export class Flux<T> implements PipePublisher<T> {
         });
     }
 
-    public switchIfEmpty(alternative: Publisher<T>): Flux<T> {
-        return new Flux<T>({
-            subscribe: (subscriber: Subscriber<T>): Subscription => {
-                let primarySub: Subscription = { request() {}, unsubscribe() {} };
-                let altSub: Subscription | null = null;
-                let hasValue = false;
-                let cancelled = false;
-                let demand = 0;
-
-                const operatorSub: Subscription = {
-                    request(n: number) {
-                        if (cancelled) return;
-                        if (n <= 0) { subscriber.onError(new Error(`request must be > 0, but was ${n}`)); return; }
-                        demand = Math.min(demand + n, Number.MAX_SAFE_INTEGER);
-                        if (altSub) altSub.request(n); else primarySub.request(n);
-                    },
-                    unsubscribe() { cancelled = true; primarySub.unsubscribe(); altSub?.unsubscribe(); }
-                };
-
-                this.source.subscribe({
-                    onSubscribe(sourceSub: Subscription) {
-                        primarySub = sourceSub;
-                        subscriber.onSubscribe(operatorSub);
-                    },
-                    onNext(v) { hasValue = true; subscriber.onNext(v); },
-                    onError(e) { subscriber.onError(e); },
-                    onComplete() {
-                        if (hasValue || cancelled) { subscriber.onComplete(); return; }
-                        altSub = alternative.subscribe({
-                            onSubscribe(altSourceSub: Subscription) {
-                                altSub = altSourceSub;
-                                if (demand > 0) altSub.request(demand);
-                            },
-                            onNext(v) { subscriber.onNext(v); },
-                            onError(e) { subscriber.onError(e); },
-                            onComplete() { subscriber.onComplete(); }
-                        });
-                    }
-                });
-
-                return operatorSub;
-            }
-        });
-    }
-
     /** Emit defaultValue if source completes without emitting any item. */
     public defaultIfEmpty(value: T): Flux<T> {
         return new Flux<T>({
@@ -666,65 +621,6 @@ export class Flux<T> implements PipePublisher<T> {
                         if (!hasValue) subscriber.onNext(value);
                         subscriber.onComplete();
                     }
-                });
-                subscriber.onSubscribe(sub);
-                return sub;
-            }
-        });
-    }
-
-    public onErrorReturn(replacement: Publisher<T>): Flux<T> {
-        return new Flux<T>({
-            subscribe: (subscriber: Subscriber<T>): Subscription => {
-                let primarySub: Subscription = { request() {}, unsubscribe() {} };
-                let altSub: Subscription | null = null;
-                let cancelled = false;
-                let demand = 0;
-
-                const operatorSub: Subscription = {
-                    request(n: number) {
-                        if (cancelled) return;
-                        if (n <= 0) { subscriber.onError(new Error(`request must be > 0, but was ${n}`)); return; }
-                        demand = Math.min(demand + n, Number.MAX_SAFE_INTEGER);
-                        if (altSub) altSub.request(n); else primarySub.request(n);
-                    },
-                    unsubscribe() { cancelled = true; primarySub.unsubscribe(); altSub?.unsubscribe(); }
-                };
-
-                this.source.subscribe({
-                    onSubscribe(sourceSub: Subscription) {
-                        primarySub = sourceSub;
-                        subscriber.onSubscribe(operatorSub);
-                    },
-                    onNext(v) { subscriber.onNext(v); },
-                    onError(_e) {
-                        if (cancelled) return;
-                        altSub = replacement.subscribe({
-                            onSubscribe(altSourceSub: Subscription) {
-                                altSub = altSourceSub;
-                                if (demand > 0) altSub.request(demand);
-                            },
-                            onNext(v) { subscriber.onNext(v); },
-                            onError(e) { subscriber.onError(e); },
-                            onComplete() { subscriber.onComplete(); }
-                        });
-                    },
-                    onComplete() { subscriber.onComplete(); }
-                });
-
-                return operatorSub;
-            }
-        });
-    }
-
-    public onErrorContinue(predicate: (error: Error) => boolean): Flux<T> {
-        return new Flux<T>({
-            subscribe: (subscriber: Subscriber<T>): Subscription => {
-                const sub = this.source.subscribe({
-                    onSubscribe(_s) {},
-                    onNext(v) { subscriber.onNext(v); },
-                    onError(e) { if (predicate(e)) subscriber.onComplete(); else subscriber.onError(e); },
-                    onComplete() { subscriber.onComplete(); }
                 });
                 subscriber.onSubscribe(sub);
                 return sub;
@@ -892,52 +788,6 @@ export class Flux<T> implements PipePublisher<T> {
 
     // ──────────────────── Side effects ───────────────────────────────
 
-    public doFirst(fn: () => void): Flux<T> {
-        return new Flux<T>({
-            subscribe: (subscriber: Subscriber<T>): Subscription => {
-                let first = true;
-                const sub = this.source.subscribe({
-                    onSubscribe(_s) {},
-                    onNext(v) { if (first) { first = false; try { fn(); } catch (_) {} } subscriber.onNext(v); },
-                    onError(e) { subscriber.onError(e); },
-                    onComplete() { subscriber.onComplete(); }
-                });
-                subscriber.onSubscribe(sub);
-                return sub;
-            }
-        });
-    }
-
-    public doOnNext(fn: (value: T) => void): Flux<T> {
-        return new Flux<T>({
-            subscribe: (subscriber: Subscriber<T>): Subscription => {
-                const sub = this.source.subscribe({
-                    onSubscribe(_s) {},
-                    onNext(v) { try { fn(v); } catch (_) {} subscriber.onNext(v); },
-                    onError(e) { subscriber.onError(e); },
-                    onComplete() { subscriber.onComplete(); }
-                });
-                subscriber.onSubscribe(sub);
-                return sub;
-            }
-        });
-    }
-
-    public doOnError(fn: (error: Error) => void): Flux<T> {
-        return new Flux<T>({
-            subscribe: (subscriber: Subscriber<T>): Subscription => {
-                const sub = this.source.subscribe({
-                    onSubscribe(_s) {},
-                    onNext(v) { subscriber.onNext(v); },
-                    onError(e) { try { fn(e); } catch (_) {} subscriber.onError(e); },
-                    onComplete() { subscriber.onComplete(); }
-                });
-                subscriber.onSubscribe(sub);
-                return sub;
-            }
-        });
-    }
-
     public doOnComplete(fn: () => void): Flux<T> {
         return new Flux<T>({
             subscribe: (subscriber: Subscriber<T>): Subscription => {
@@ -1008,72 +858,7 @@ export class Flux<T> implements PipePublisher<T> {
         });
     }
 
-    public doOnSubscribe(fn: (subscription: Subscription) => void): Flux<T> {
-        return new Flux<T>({
-            subscribe: (subscriber: Subscriber<T>): Subscription => {
-                const sub = this.source.subscribe({
-                    onSubscribe(_s) {},
-                    onNext(v) { subscriber.onNext(v); },
-                    onError(e) { subscriber.onError(e); },
-                    onComplete() { subscriber.onComplete(); }
-                });
-                try { fn(sub); } catch (_) {}
-                subscriber.onSubscribe(sub);
-                return sub;
-            }
-        });
-    }
-
     // ──────────────────── Scheduling ────────────────────────────────
-
-    public publishOn(scheduler: Scheduler): Flux<T> {
-        return new Flux<T>({
-            subscribe: (subscriber: Subscriber<T>): Subscription => {
-                const sub = this.source.subscribe({
-                    onSubscribe(_s) {},
-                    onNext(v) { scheduler.schedule(() => subscriber.onNext(v)); },
-                    onError(e) { scheduler.schedule(() => subscriber.onError(e)); },
-                    onComplete() { scheduler.schedule(() => subscriber.onComplete()); }
-                });
-                subscriber.onSubscribe(sub);
-                return sub;
-            }
-        });
-    }
-
-    public subscribeOn(scheduler: Scheduler): Flux<T> {
-        return new Flux<T>({
-            subscribe: (subscriber: Subscriber<T>): Subscription => {
-                let sub: Subscription | null = null;
-                let pending = 0;
-                let cancelled = false;
-
-                const proxy: Subscription = {
-                    request(n: number) {
-                        if (cancelled) return;
-                        if (n <= 0) { subscriber.onError(new Error(`request must be > 0, but was ${n}`)); return; }
-                        if (sub) sub.request(n); else pending = Math.min(pending + n, Number.MAX_SAFE_INTEGER);
-                    },
-                    unsubscribe() { cancelled = true; sub?.unsubscribe(); }
-                };
-
-                subscriber.onSubscribe(proxy);
-
-                scheduler.schedule(() => {
-                    if (cancelled) return;
-                    sub = this.source.subscribe({
-                        onSubscribe(_s) {},
-                        onNext(v) { subscriber.onNext(v); },
-                        onError(e) { subscriber.onError(e); },
-                        onComplete() { subscriber.onComplete(); }
-                    });
-                    if (pending > 0) sub.request(pending);
-                });
-
-                return proxy;
-            }
-        });
-    }
 
     public pipe<R>(
         producer: (onNext: (value: R) => void, onError: (error: Error) => void, onComplete: () => void) => void,
