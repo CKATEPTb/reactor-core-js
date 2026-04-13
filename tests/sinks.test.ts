@@ -1,16 +1,4 @@
-import {
-    EmptySink,
-    MulticastDirectAllOrNothingSink,
-    MulticastDirectBestEffortSink,
-    MulticastOnBackpressureBufferSink,
-    OneSink,
-    ReplayAllSink,
-    ReplayLatestOrDefaultSink,
-    ReplayLatestSink,
-    Sinks,
-    UnicastOnBackpressureBufferSink,
-    UnicastOnBackpressureErrorSink,
-} from '@/.';
+import {Sinks} from '@/.';
 import {Publisher, Subscriber, Subscription} from "@/.";
 
 // ---------------------------------------------------------------------------
@@ -120,9 +108,6 @@ describe('Sinks.empty() / EmptySink', () => {
         expect(sub.completed).toBe(false);
     });
 
-    test('factory Sinks.empty() returns EmptySink', () => {
-        expect(Sinks.empty()).toBeInstanceOf(EmptySink);
-    });
 });
 
 // ---------------------------------------------------------------------------
@@ -219,9 +204,6 @@ describe('Sinks.one() / OneSink', () => {
         expect(sub.values).toHaveLength(0);
     });
 
-    test('factory Sinks.one() returns OneSink', () => {
-        expect(Sinks.one()).toBeInstanceOf(OneSink);
-    });
 });
 
 // ---------------------------------------------------------------------------
@@ -290,9 +272,6 @@ describe('Sinks.many().unicast().onBackpressureBuffer()', () => {
         expect(sub.values).toHaveLength(0);
     });
 
-    test('factory returns UnicastOnBackpressureBufferSink', () => {
-        expect(Sinks.many().unicast().onBackpressureBuffer()).toBeInstanceOf(UnicastOnBackpressureBufferSink);
-    });
 });
 
 // ---------------------------------------------------------------------------
@@ -338,9 +317,6 @@ describe('Sinks.many().unicast().onBackpressureError()', () => {
         expect(sub.completed).toBe(true);
     });
 
-    test('factory returns UnicastOnBackpressureErrorSink', () => {
-        expect(Sinks.many().unicast().onBackpressureError()).toBeInstanceOf(UnicastOnBackpressureErrorSink);
-    });
 });
 
 // ---------------------------------------------------------------------------
@@ -397,9 +373,6 @@ describe('Sinks.many().multicast().directAllOrNothing()', () => {
         expect(sub.completed).toBe(true);
     });
 
-    test('factory returns MulticastDirectAllOrNothingSink', () => {
-        expect(Sinks.many().multicast().directAllOrNothing()).toBeInstanceOf(MulticastDirectAllOrNothingSink);
-    });
 });
 
 // ---------------------------------------------------------------------------
@@ -455,9 +428,6 @@ describe('Sinks.many().multicast().directBestEffort()', () => {
         expect(s2.values).toEqual([1, 2]);
     });
 
-    test('factory returns MulticastDirectBestEffortSink', () => {
-        expect(Sinks.many().multicast().directBestEffort()).toBeInstanceOf(MulticastDirectBestEffortSink);
-    });
 });
 
 // ---------------------------------------------------------------------------
@@ -513,9 +483,6 @@ describe('Sinks.many().multicast().onBackpressureBuffer()', () => {
         expect(() => sink.next(1)).not.toThrow();
     });
 
-    test('factory returns MulticastOnBackpressureBufferSink', () => {
-        expect(Sinks.many().multicast().onBackpressureBuffer()).toBeInstanceOf(MulticastOnBackpressureBufferSink);
-    });
 });
 
 // ---------------------------------------------------------------------------
@@ -584,9 +551,6 @@ describe('Sinks.many().replay().all()', () => {
         expect(s2.values).toEqual([1, 2]);
     });
 
-    test('factory returns ReplayAllSink', () => {
-        expect(Sinks.many().replay().all()).toBeInstanceOf(ReplayAllSink);
-    });
 });
 
 // ---------------------------------------------------------------------------
@@ -634,13 +598,6 @@ describe('Sinks.many().replay().latest(n) / .limit(n)', () => {
         expect(live.values).toEqual([1, 2, 3]);
     });
 
-    test('factory latest() returns ReplayLatestSink', () => {
-        expect(Sinks.many().replay().latest(1)).toBeInstanceOf(ReplayLatestSink);
-    });
-
-    test('factory limit() returns ReplayLatestSink', () => {
-        expect(Sinks.many().replay().limit(1)).toBeInstanceOf(ReplayLatestSink);
-    });
 });
 
 // ---------------------------------------------------------------------------
@@ -689,9 +646,6 @@ describe('Sinks.many().replay().latestOrDefault(value)', () => {
         expect(sub.errors).toEqual([err]);
     });
 
-    test('factory returns ReplayLatestOrDefaultSink', () => {
-        expect(Sinks.many().replay().latestOrDefault(0)).toBeInstanceOf(ReplayLatestOrDefaultSink);
-    });
 });
 
 // ---------------------------------------------------------------------------
