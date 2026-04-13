@@ -591,17 +591,20 @@ export abstract class AbstractPipePublisher<T, Self> implements Publisher<T> {
         return this.wrapSource({
             subscribe: (subscriber: Subscriber<T>): Subscription => {
                 const tag = `[${label}]`;
-                const sub = this.source.subscribe({
-                    onSubscribe(_s) { console.log(`${tag} onSubscribe`); },
+                let wrappedSub!: Subscription;
+                this.source.subscribe({
+                    onSubscribe(s: Subscription) {
+                        console.log(`${tag} onSubscribe`);
+                        wrappedSub = {
+                            request(n: number) { console.log(`${tag} request(${n})`); s.request(n); },
+                            unsubscribe() { console.log(`${tag} cancel`); s.unsubscribe(); }
+                        };
+                        subscriber.onSubscribe(wrappedSub);
+                    },
                     onNext(v: T) { console.log(`${tag} onNext(${JSON.stringify(v)})`); subscriber.onNext(v); },
                     onError(e: Error) { console.error(`${tag} onError: ${e.message}`); subscriber.onError(e); },
                     onComplete() { console.log(`${tag} onComplete`); subscriber.onComplete(); }
                 });
-                const wrappedSub: Subscription = {
-                    request(n: number) { console.log(`${tag} request(${n})`); sub.request(n); },
-                    unsubscribe() { console.log(`${tag} cancel`); sub.unsubscribe(); }
-                };
-                subscriber.onSubscribe(wrappedSub);
                 return wrappedSub;
             }
         });

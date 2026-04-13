@@ -2321,6 +2321,31 @@ describe('log', () => {
         const e = collectError(Flux.error<number>(new Error('log-err')).log());
         expect(e!.message).toBe('log-err');
     });
+
+    it('onSubscribe is delivered before any items (RS 1.3) — synchronous source', () => {
+        const events: string[] = [];
+        Flux.just(1, 2).log('rs').subscribe({
+            onSubscribe(_s) { events.push('sub'); _s.request(10); },
+            onNext(v) { events.push(`next:${v}`); },
+            onError() {},
+            onComplete() { events.push('done'); }
+        });
+        expect(events[0]).toBe('sub');
+        expect(events).toEqual(['sub', 'next:1', 'next:2', 'done']);
+    });
+
+    it('intercepts request and cancel signals', () => {
+        const logged: string[] = [];
+        const spy = jest.spyOn(console, 'log').mockImplementation(msg => logged.push(msg));
+        try {
+            const ts = new TestSubscriber<number>();
+            const sub = Flux.just(1).log('spy').subscribe(ts);
+            ts.request(5);
+            sub.unsubscribe();
+        } finally { spy.mockRestore(); }
+        expect(logged.some(m => m.includes('request('))).toBe(true);
+        expect(logged.some(m => m.includes('cancel'))).toBe(true);
+    });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
