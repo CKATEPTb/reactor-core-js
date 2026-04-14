@@ -1,5 +1,5 @@
 import {Sink} from "@/sinks/Sink";
-import {Publisher} from "@/publishers";
+import {Flux, Publisher} from "@/publishers";
 import {Subscriber, Subscription} from "@/subscriptions";
 
 // Rule 1.1: demand tracked per subscriber — onNext only sent when demand >= 1
@@ -47,6 +47,10 @@ export default class OneSink<T> implements Sink<T>, Publisher<T> {
                 entry.completionQueued = true;
             }
         }
+    }
+
+    asFlux(): Flux<T> {
+        return Flux.from(this);
     }
 
     subscribe(subscriber: Subscriber<T>): Subscription {

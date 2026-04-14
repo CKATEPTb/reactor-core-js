@@ -1,5 +1,5 @@
 import {Sink} from "@/sinks/Sink";
-import {Publisher} from "@/publishers";
+import {Flux, Publisher} from "@/publishers";
 import {Subscriber, Subscription} from "@/subscriptions";
 
 /**
@@ -27,6 +27,10 @@ export abstract class AbstractUnicastSink<T> implements Sink<T>, Publisher<T> {
     protected terminalError: Error | null = null;
 
     abstract next(value: T): void;
+
+    asFlux(): Flux<T> {
+        return Flux.from(this);
+    }
 
     // ──── Hooks ──────────────────────────────────────────────────────────────
 

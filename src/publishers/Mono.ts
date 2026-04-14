@@ -353,6 +353,54 @@ export class Mono<T> extends AbstractPipePublisher<T, Mono<T>> implements PipePu
         });
     }
 
+    /**
+     * Returns a `Mono<void>` that completes when **all** given publishers complete.
+     *
+     * Emitted values from the sources are ignored. If any source signals `onError`,
+     * the error is propagated immediately and all other sources are cancelled.
+     * If no sources are provided, completes immediately.
+     *
+     * @param sources - Zero or more publishers to wait on.
+     * @returns A `Mono<void>` that completes once every source has completed.
+     *
+     * @example
+     * ```typescript
+     * Mono.when(Mono.delay(100), Mono.delay(200))
+     *   .subscribe(undefined, undefined, () => console.log('all done'));
+     * ```
+     */
+    public static when(...sources: Publisher<unknown>[]): Mono<void> {
+        if (sources.length === 0) return Mono.empty<void>();
+        return Mono.generate<void>(sink => {
+            let done = false;
+            let completedCount = 0;
+            const subs: Subscription[] = [];
+
+            for (const source of sources) {
+                const sub = source.subscribe({
+                    onSubscribe(_s) {},
+                    onNext(_v) {},
+                    onError(e: Error) {
+                        if (done) return;
+                        done = true;
+                        for (const s of subs) s.unsubscribe();
+                        sink.error(e);
+                    },
+                    onComplete() {
+                        if (done) return;
+                        completedCount++;
+                        if (completedCount === sources.length) {
+                            done = true;
+                            sink.complete();
+                        }
+                    }
+                });
+                subs.push(sub);
+            }
+            for (const sub of subs) sub.request(Number.MAX_SAFE_INTEGER);
+        });
+    }
+
     // ─────────────────────── PipePublisher operators ─────────────────────────
 
     /**

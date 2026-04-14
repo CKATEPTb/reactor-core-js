@@ -1266,3 +1266,93 @@ describe('Mono#toFuture', () => {
         await expect(Mono.error(new Error('rej')).toFuture()).rejects.toThrow('rej');
     });
 });
+
+// ---------------------------------------------------------------------------
+// Mono.when
+// ---------------------------------------------------------------------------
+
+describe('Mono.when', () => {
+    test('completes immediately with no sources', () => {
+        const sub = new TestSubscriber<void>().subscribeTo(Mono.when());
+        expect(sub.completed).toBe(true);
+        expect(sub.errors).toHaveLength(0);
+    });
+
+    test('completes when single source completes', () => {
+        const sub = new TestSubscriber<void>().subscribeTo(
+            Mono.when(Mono.just(42))
+        );
+        expect(sub.completed).toBe(true);
+        expect(sub.values).toHaveLength(0);
+    });
+
+    test('ignores emitted values from sources', () => {
+        const sub = new TestSubscriber<void>().subscribeTo(
+            Mono.when(Mono.just(1), Mono.just(2), Mono.just(3))
+        );
+        expect(sub.values).toHaveLength(0);
+        expect(sub.completed).toBe(true);
+    });
+
+    test('completes only when all sources complete', () => {
+        let completeA: (() => void) | null = null;
+        let completeB: (() => void) | null = null;
+
+        const sourceA = Mono.generate<number>(sink => { completeA = () => sink.next(1); });
+        const sourceB = Mono.generate<number>(sink => { completeB = () => sink.next(2); });
+
+        const sub = new TestSubscriber<void>().subscribeTo(Mono.when(sourceA, sourceB));
+        expect(sub.completed).toBe(false);
+
+        completeA!();
+        expect(sub.completed).toBe(false);
+
+        completeB!();
+        expect(sub.completed).toBe(true);
+    });
+
+    test('propagates error from first failing source and cancels the rest', () => {
+        const err = new Error('when-err');
+        let completeB: (() => void) | null = null;
+        let bCompleted = false;
+
+        const sourceA = Mono.error<number>(err);
+        const sourceB = Mono.generate<number>(sink => {
+            completeB = () => { sink.next(99); bCompleted = true; };
+        });
+
+        const sub = new TestSubscriber<void>().subscribeTo(Mono.when(sourceA, sourceB));
+        expect(sub.errors).toEqual([err]);
+        expect(sub.completed).toBe(false);
+
+        // completing B after error must be a no-op
+        completeB!();
+        expect(bCompleted).toBe(true);
+        expect(sub.errors).toHaveLength(1);
+        expect(sub.completed).toBe(false);
+    });
+
+    test('first error wins even if other sources emit later', () => {
+        const err = new Error('first-err');
+        const sub = new TestSubscriber<void>().subscribeTo(
+            Mono.when(Mono.error<number>(err), Mono.just(5))
+        );
+        expect(sub.errors).toEqual([err]);
+        expect(sub.completed).toBe(false);
+    });
+
+    test('works with a single empty source', () => {
+        const sub = new TestSubscriber<void>().subscribeTo(
+            Mono.when(Mono.empty<number>())
+        );
+        expect(sub.completed).toBe(true);
+    });
+
+    test('completes when all sources are empty', () => {
+        const sub = new TestSubscriber<void>().subscribeTo(
+            Mono.when(Mono.empty<number>(), Mono.empty<string>())
+        );
+        expect(sub.completed).toBe(true);
+        expect(sub.values).toHaveLength(0);
+    });
+});

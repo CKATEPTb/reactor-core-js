@@ -2120,6 +2120,116 @@ export class Flux<T> extends AbstractPipePublisher<T, Flux<T>> implements PipePu
     }
 
     /**
+     * Multicasts this `Flux` to all current subscribers using a refCounting strategy.
+     *
+     * The upstream is subscribed to when the **first** subscriber joins and cancelled
+     * when the **last** subscriber leaves. If a new subscriber arrives after all others
+     * have cancelled, a fresh upstream subscription is created.
+     *
+     * Items are delivered on a best-effort basis: a subscriber that has no outstanding
+     * demand when an item arrives simply misses that item (no buffering). Once the upstream
+     * terminates (complete or error), the terminal signal is replayed to any future subscriber.
+     *
+     * @returns A hot `Flux<T>` that shares a single upstream subscription.
+     *
+     * @example
+     * ```typescript
+     * const shared = Flux.interval(100).share();
+     * shared.subscribe(v => console.log('A', v));
+     * setTimeout(() => shared.subscribe(v => console.log('B', v)), 250);
+     * // A 0, A 1, A 2, B 2, A 3, B 3 ...
+     * ```
+     */
+    public share(): Flux<T> {
+        type Entry = { demand: number; cancelled: boolean };
+        const entries = new Map<Subscriber<T>, Entry>();
+        let upstreamSub: Subscription | null = null;
+        let terminated = false;
+        let terminalError: Error | null = null;
+
+        const source = this.source;
+
+        const connect = () => {
+            terminated = false;
+            terminalError = null;
+            source.subscribe({
+                onSubscribe(s) {
+                    upstreamSub = s;
+                    s.request(Number.MAX_SAFE_INTEGER);
+                },
+                onNext(v: T) {
+                    for (const [sub, entry] of entries) {
+                        if (!entry.cancelled && entry.demand > 0) {
+                            entry.demand--;
+                            sub.onNext(v);
+                        }
+                    }
+                },
+                onError(e: Error) {
+                    terminated = true;
+                    terminalError = e;
+                    upstreamSub = null;
+                    for (const [sub, entry] of entries) {
+                        if (!entry.cancelled) sub.onError(e);
+                    }
+                    entries.clear();
+                },
+                onComplete() {
+                    terminated = true;
+                    upstreamSub = null;
+                    for (const [sub, entry] of entries) {
+                        if (!entry.cancelled) sub.onComplete();
+                    }
+                    entries.clear();
+                }
+            });
+        };
+
+        return new Flux<T>({
+            subscribe: (subscriber: Subscriber<T>): Subscription => {
+                if (terminated) {
+                    const sub = { request() {}, unsubscribe() {} };
+                    subscriber.onSubscribe(sub);
+                    terminalError ? subscriber.onError(terminalError) : subscriber.onComplete();
+                    return sub;
+                }
+
+                const entry: Entry = { demand: 0, cancelled: false };
+                entries.set(subscriber, entry);
+
+                const sub: Subscription = {
+                    request(n: number) {
+                        if (entry.cancelled) return;
+                        if (n <= 0) {
+                            entry.cancelled = true;
+                            entries.delete(subscriber);
+                            subscriber.onError(new Error(`request must be > 0, but was ${n}`));
+                            return;
+                        }
+                        entry.demand = Math.min(entry.demand + n, Number.MAX_SAFE_INTEGER);
+                        if (!upstreamSub && !terminated) {
+                            connect();
+                        }
+                    },
+                    unsubscribe() {
+                        if (entry.cancelled) return;
+                        entry.cancelled = true;
+                        entries.delete(subscriber);
+                        if (entries.size === 0 && upstreamSub) {
+                            upstreamSub.unsubscribe();
+                            upstreamSub = null;
+                        }
+                    }
+                };
+
+                subscriber.onSubscribe(sub);
+
+                return sub;
+            }
+        });
+    }
+
+    /**
      * Pairs each item with its zero-based index, emitting `[index, item]` tuples.
      *
      * @returns A `Flux<[number, T]>` where the first element is the zero-based index.

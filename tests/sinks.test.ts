@@ -1,5 +1,6 @@
-import {Sinks} from '@/.';
+import {Flux, Sinks} from '@/.';
 import {Publisher, Subscriber, Subscription} from "@/.";
+import {type SinkPublisher} from "@/sinks";
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -865,5 +866,112 @@ describe('Reactive Streams Spec — Rule 3.16: no unbounded recursion (request i
         sink.complete();
 
         expect(received).toHaveLength(N);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// SinkPublisher#asFlux
+// ---------------------------------------------------------------------------
+
+describe('SinkPublisher#asFlux', () => {
+    function collectFlux<T>(flux: Flux<T>): { values: T[]; completed: boolean; error: Error | null } {
+        const values: T[] = [];
+        let completed = false;
+        let error: Error | null = null;
+        const sub = flux.subscribe({
+            onSubscribe(s) { s.request(Number.MAX_SAFE_INTEGER); },
+            onNext(v) { values.push(v); },
+            onError(e) { error = e; },
+            onComplete() { completed = true; }
+        });
+        void sub;
+        return { values, completed, error };
+    }
+
+    test('Sinks.one().asFlux() returns a Flux instance', () => {
+        const sink = Sinks.one<number>();
+        expect(sink.asFlux()).toBeInstanceOf(Flux);
+    });
+
+    test('Sinks.empty().asFlux() returns a Flux instance', () => {
+        const sink = Sinks.empty<number>();
+        expect(sink.asFlux()).toBeInstanceOf(Flux);
+    });
+
+    test('Sinks.many().multicast().directBestEffort().asFlux() returns a Flux instance', () => {
+        const sink = Sinks.many().multicast().directBestEffort<number>();
+        expect(sink.asFlux()).toBeInstanceOf(Flux);
+    });
+
+    test('Sinks.many().unicast().onBackpressureBuffer().asFlux() returns a Flux instance', () => {
+        const sink = Sinks.many().unicast().onBackpressureBuffer<number>();
+        expect(sink.asFlux()).toBeInstanceOf(Flux);
+    });
+
+    test('Sinks.one(): asFlux delivers the pushed value and completes', () => {
+        const sink = Sinks.one<number>();
+        sink.next(42);
+        sink.complete();
+        const result = collectFlux(sink.asFlux());
+        expect(result.values).toEqual([42]);
+        expect(result.completed).toBe(true);
+    });
+
+    test('Sinks.one(): asFlux propagates error', () => {
+        const err = new Error('one-err');
+        const sink = Sinks.one<number>();
+        sink.error(err);
+        const result = collectFlux(sink.asFlux());
+        expect(result.error).toBe(err);
+        expect(result.completed).toBe(false);
+    });
+
+    test('Sinks.empty(): asFlux completes immediately after complete()', () => {
+        const sink = Sinks.empty<number>();
+        sink.complete();
+        const result = collectFlux(sink.asFlux());
+        expect(result.values).toHaveLength(0);
+        expect(result.completed).toBe(true);
+    });
+
+    test('Sinks.many().replay().all(): asFlux replays all items to each subscriber', () => {
+        const sink = Sinks.many().replay().all<number>();
+        sink.next(1);
+        sink.next(2);
+        sink.next(3);
+        sink.complete();
+
+        const r1 = collectFlux(sink.asFlux());
+        const r2 = collectFlux(sink.asFlux());
+        expect(r1.values).toEqual([1, 2, 3]);
+        expect(r2.values).toEqual([1, 2, 3]);
+    });
+
+    test('Sinks.many().unicast().onBackpressureBuffer(): asFlux delivers buffered items', () => {
+        const sink = Sinks.many().unicast().onBackpressureBuffer<number>();
+        sink.next(10);
+        sink.next(20);
+        sink.complete();
+        const result = collectFlux(sink.asFlux());
+        expect(result.values).toEqual([10, 20]);
+        expect(result.completed).toBe(true);
+    });
+
+    test('asFlux supports all Flux operators', () => {
+        const sink = Sinks.many().replay().all<number>();
+        sink.next(1);
+        sink.next(2);
+        sink.next(3);
+        sink.complete();
+
+        const result = collectFlux(sink.asFlux().map(n => n * 10).filter(n => n > 10));
+        expect(result.values).toEqual([20, 30]);
+    });
+
+    test('SinkPublisher type includes asFlux — compiles and works', () => {
+        // type-level: SinkPublisher<T> must have asFlux(): Flux<T>
+        const sink: SinkPublisher<string> = Sinks.many().multicast().directBestEffort<string>();
+        const flux: Flux<string> = sink.asFlux();
+        expect(flux).toBeInstanceOf(Flux);
     });
 });
