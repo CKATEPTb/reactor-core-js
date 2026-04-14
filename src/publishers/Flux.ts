@@ -11,6 +11,55 @@ import {Signal} from "@/publishers/Signal";
 import {FluxSink} from "@/publishers/FluxSink";
 
 /**
+ * Minimal interface compatible with the browser `WebSocket` API and the `ws` npm package.
+ *
+ * Any object that exposes `onmessage`, `onerror`, `onclose`, and `close()` satisfies
+ * this interface and can be passed to {@link Flux.fromWebSocket}.
+ *
+ * @typeParam T - The type of `event.data` received in each message.
+ */
+export interface WebSocketLike<T = unknown> {
+    /** Assigned when a message arrives; `event.data` carries the payload. */
+    onmessage: ((event: { data: T }) => void) | null;
+    /** Assigned when a transport-level error occurs. */
+    onerror: ((event: unknown) => void) | null;
+    /** Assigned when the connection is closed. */
+    onclose: ((event: { code: number; reason: string | Buffer }) => void) | null;
+    /** Close the connection, optionally with a status code and reason. */
+    close(code?: number, reason?: string | Buffer): void;
+    /** Current connection state (0 = CONNECTING, 1 = OPEN, 2 = CLOSING, 3 = CLOSED). */
+    readonly readyState: number;
+}
+
+/**
+ * Minimal DOM-style event target interface (`addEventListener` / `removeEventListener`).
+ * Satisfied by browser `EventTarget`, `HTMLElement`, `window`, `document`, etc.
+ *
+ * @typeParam T - The event type emitted by the target.
+ */
+export interface DOMEventTargetLike<T = Event> {
+    addEventListener(type: string, listener: (event: T) => void): void;
+    removeEventListener(type: string, listener: (event: T) => void): void;
+}
+
+/**
+ * Minimal Node.js-style event emitter interface (`on` / `off`).
+ * Satisfied by Node.js `EventEmitter` and any object with the same shape.
+ *
+ * @typeParam T - The event data type emitted by the emitter.
+ */
+export interface NodeEventEmitterLike<T = unknown> {
+    on(event: string | symbol, listener: (data: T) => void): void;
+    off(event: string | symbol, listener: (data: T) => void): void;
+}
+
+/**
+ * Union of {@link DOMEventTargetLike} and {@link NodeEventEmitterLike}.
+ * Accepted by {@link Flux.fromEvent}.
+ */
+export type EventSourceLike<T = unknown> = DOMEventTargetLike<T> | NodeEventEmitterLike<T>;
+
+/**
  * A cold publisher of 0 to N items with full backpressure support.
  *
  * Items flow only when the downstream {@link Subscription} issues `request(n)`.
@@ -417,6 +466,102 @@ export class Flux<T> extends AbstractPipePublisher<T, Flux<T>> implements PipePu
             const resource = resourceSupplier();
             return Flux.from(sourceFactory(resource))
                 .doFinally(() => { try { cleanup(resource); } catch (_) {} });
+        });
+    }
+
+    /**
+     * Creates a `Flux<T>` that emits each message received on a `WebSocket`.
+     *
+     * - Each message's `data` is emitted as the next item.
+     * - The stream **completes** when the socket is closed (any close code).
+     * - A transport-level error event terminates the stream with an `Error`.
+     * - **Unsubscribing** closes the socket gracefully (sends a normal-closure frame).
+     *
+     * Compatible with the browser `WebSocket` API and the `ws` npm package. Any object
+     * satisfying the {@link WebSocketLike} interface can be passed.
+     *
+     * @param ws - An open (or opening) WebSocket instance.
+     * @returns A `Flux<T>` backed by the WebSocket message stream.
+     *
+     * @example
+     * ```typescript
+     * // Browser
+     * Flux.fromWebSocket<string>(new WebSocket('wss://example.com/chat'))
+     *   .map(msg => JSON.parse(msg))
+     *   .subscribe(msg => console.log(msg));
+     *
+     * // Node.js (ws package)
+     * import WebSocket from 'ws';
+     * Flux.fromWebSocket<Buffer>(new WebSocket('ws://localhost:8080'))
+     *   .map(buf => buf.toString())
+     *   .subscribe(text => console.log(text));
+     * ```
+     */
+    public static fromWebSocket<T = unknown>(ws: WebSocketLike<T>): Flux<T> {
+        return Flux.create<T>(sink => {
+            ws.onmessage = (event) => sink.next(event.data);
+
+            ws.onerror = (event) => {
+                const error = event instanceof Error
+                    ? event
+                    : new Error(`WebSocket error: ${String(event)}`);
+                sink.error(error);
+            };
+
+            ws.onclose = () => sink.complete();
+
+            sink.onCancel(() => {
+                ws.onmessage = null;
+                ws.onerror = null;
+                ws.onclose = null;
+                ws.close(1000, 'unsubscribed');
+            });
+        });
+    }
+
+    /**
+     * Creates an infinite `Flux<T>` that emits every event of type `eventName` fired on
+     * `target`. The stream never completes on its own — call `unsubscribe()` or chain a
+     * limiting operator (e.g. `.take(n)`, `.takeUntilOther(stop$)`) to terminate it.
+     *
+     * Works with:
+     * - **DOM targets** (`EventTarget`: `HTMLElement`, `window`, `document`, …) — uses
+     *   `addEventListener` / `removeEventListener`.
+     * - **Node.js emitters** (any object with `on` / `off`) — uses those methods directly.
+     *
+     * Events fired while downstream has no demand are **buffered** (via {@link Flux.create})
+     * and delivered once demand is available.
+     *
+     * @param target - A DOM `EventTarget` or Node.js-style event emitter.
+     * @param eventName - The event name / type to listen for.
+     * @returns An infinite cold `Flux<T>` of matching events.
+     *
+     * @example
+     * ```typescript
+     * // Browser — click events on a button
+     * Flux.fromEvent<MouseEvent>(document.getElementById('btn')!, 'click')
+     *   .map(e => ({ x: e.clientX, y: e.clientY }))
+     *   .subscribe(pos => console.log(pos));
+     *
+     * // Node.js EventEmitter
+     * import { EventEmitter } from 'events';
+     * const emitter = new EventEmitter();
+     * Flux.fromEvent<string>(emitter, 'data')
+     *   .take(5)
+     *   .subscribe(v => console.log(v));
+     * ```
+     */
+    public static fromEvent<T = Event>(target: EventSourceLike<T>, eventName: string): Flux<T> {
+        return Flux.create<T>(sink => {
+            const handler = (event: T) => sink.next(event);
+
+            if ('addEventListener' in target) {
+                target.addEventListener(eventName, handler);
+                sink.onCancel(() => target.removeEventListener(eventName, handler));
+            } else {
+                target.on(eventName, handler);
+                sink.onCancel(() => target.off(eventName, handler));
+            }
         });
     }
 

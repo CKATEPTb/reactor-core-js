@@ -1,4 +1,4 @@
-import {Flux, Mono, Publisher, Sinks, Subscriber, Subscription} from '@/.';
+import {Flux, Mono, Publisher, Sinks, Subscriber, Subscription, type WebSocketLike, type DOMEventTargetLike, type NodeEventEmitterLike} from '@/.';
 
 // ─────────────────────────── Test helpers ────────────────────────────────────
 
@@ -2911,5 +2911,390 @@ describe('Flux#share', () => {
 
         expect(a.error).toBe(err);
         expect(b.error).toBe(err);
+    });
+});
+
+// ─────────────────────── Flux.fromWebSocket ──────────────────────────────────
+
+/** Test double for WebSocket — lets us control events and inspect close calls. */
+function makeMockWs<T>(): WebSocketLike<T> & {
+    emit: (data: T) => void;
+    emitError: (event?: unknown) => void;
+    emitClose: (code?: number, reason?: string) => void;
+    closeCallCount: number;
+    lastCloseCode: number | undefined;
+    lastCloseReason: string | Buffer | undefined;
+} {
+    let closeCalls = 0;
+    let lastCode: number | undefined;
+    let lastReason: string | Buffer | undefined;
+
+    const ws: ReturnType<typeof makeMockWs<T>> = {
+        readyState: 1,
+        onmessage: null,
+        onerror: null,
+        onclose: null,
+        close(code?: number, reason?: string | Buffer) {
+            closeCalls++;
+            lastCode = code;
+            lastReason = reason;
+        },
+        emit(data: T) { ws.onmessage?.({ data }); },
+        emitError(event: unknown = new Error('ws error')) { ws.onerror?.(event); },
+        emitClose(code = 1000, reason = '') { ws.onclose?.({ code, reason }); },
+        get closeCallCount() { return closeCalls; },
+        get lastCloseCode() { return lastCode; },
+        get lastCloseReason() { return lastReason; },
+    };
+    return ws;
+}
+
+describe('Flux.fromWebSocket', () => {
+    it('emits each message data', () => {
+        const ws = makeMockWs<string>();
+        const ts = new TestSubscriber<string>();
+        Flux.fromWebSocket(ws).subscribe(ts);
+        ts.requestUnbounded();
+
+        ws.emit('hello');
+        ws.emit('world');
+
+        expect(ts.items).toEqual(['hello', 'world']);
+    });
+
+    it('completes when socket closes', () => {
+        const ws = makeMockWs<string>();
+        const ts = new TestSubscriber<string>();
+        Flux.fromWebSocket(ws).subscribe(ts);
+        ts.requestUnbounded();
+
+        ws.emit('msg');
+        ws.emitClose(1000);
+
+        expect(ts.items).toEqual(['msg']);
+        expect(ts.completed).toBe(true);
+        expect(ts.error).toBeNull();
+    });
+
+    it('completes on any close code', () => {
+        const ws = makeMockWs<number>();
+        const ts = new TestSubscriber<number>();
+        Flux.fromWebSocket(ws).subscribe(ts);
+        ts.requestUnbounded();
+
+        ws.emitClose(4001, 'custom close');
+
+        expect(ts.completed).toBe(true);
+    });
+
+    it('errors when onerror fires with an Error', () => {
+        const ws = makeMockWs<string>();
+        const ts = new TestSubscriber<string>();
+        Flux.fromWebSocket(ws).subscribe(ts);
+        ts.requestUnbounded();
+
+        const err = new Error('connection refused');
+        ws.emitError(err);
+
+        expect(ts.error).toBe(err);
+        expect(ts.completed).toBe(false);
+    });
+
+    it('wraps non-Error onerror events in an Error', () => {
+        const ws = makeMockWs<string>();
+        const ts = new TestSubscriber<string>();
+        Flux.fromWebSocket(ws).subscribe(ts);
+        ts.requestUnbounded();
+
+        ws.emitError({ type: 'error', message: 'bad' });
+
+        expect(ts.error).toBeInstanceOf(Error);
+        expect(ts.error?.message).toContain('WebSocket error');
+    });
+
+    it('closes the socket when subscriber unsubscribes', () => {
+        const ws = makeMockWs<string>();
+        const ts = new TestSubscriber<string>();
+        Flux.fromWebSocket(ws).subscribe(ts);
+        ts.requestUnbounded();
+
+        ts.sub.unsubscribe();
+
+        expect(ws.closeCallCount).toBe(1);
+        expect(ws.lastCloseCode).toBe(1000);
+    });
+
+    it('clears handlers on unsubscribe to avoid late deliveries', () => {
+        const ws = makeMockWs<string>();
+        const ts = new TestSubscriber<string>();
+        Flux.fromWebSocket(ws).subscribe(ts);
+        ts.requestUnbounded();
+
+        ts.sub.unsubscribe();
+
+        // callbacks cleared — these should be no-ops
+        ws.emit('late');
+        ws.emitError(new Error('late error'));
+
+        expect(ts.items).toHaveLength(0);
+        expect(ts.error).toBeNull();
+    });
+
+    it('respects backpressure — buffers messages when demand is zero', () => {
+        const ws = makeMockWs<number>();
+        const ts = new TestSubscriber<number>();
+        Flux.fromWebSocket(ws).subscribe(ts);
+        // no request yet — messages should be buffered
+
+        ws.emit(1);
+        ws.emit(2);
+        ws.emit(3);
+        expect(ts.items).toHaveLength(0);
+
+        ts.request(2);
+        expect(ts.items).toEqual([1, 2]);
+
+        ts.request(1);
+        expect(ts.items).toEqual([1, 2, 3]);
+    });
+
+    it('all Flux operators work on the returned stream', () => {
+        const ws = makeMockWs<number>();
+        const ts = new TestSubscriber<string>();
+        Flux.fromWebSocket(ws)
+            .filter(n => n % 2 === 0)
+            .map(n => `even:${n}`)
+            .subscribe(ts);
+        ts.requestUnbounded();
+
+        ws.emit(1);
+        ws.emit(2);
+        ws.emit(3);
+        ws.emit(4);
+        ws.emitClose();
+
+        expect(ts.items).toEqual(['even:2', 'even:4']);
+        expect(ts.completed).toBe(true);
+    });
+
+    it('type parameter constrains message data type', () => {
+        // compile-time check: TypeScript should infer T = { id: number }
+        const ws = makeMockWs<{ id: number }>();
+        const ts = new TestSubscriber<number>();
+        Flux.fromWebSocket(ws)
+            .map(msg => msg.id)
+            .subscribe(ts);
+        ts.requestUnbounded();
+
+        ws.emit({ id: 42 });
+        expect(ts.items).toEqual([42]);
+    });
+});
+
+// ─────────────────────── Flux.fromEvent ──────────────────────────────────────
+
+/** DOM-style event target mock */
+function makeDOMTarget<T = unknown>(): DOMEventTargetLike<T> & {
+    dispatch(event: T): void;
+    listenerCount(): number;
+} {
+    const listeners = new Map<string, Set<(e: T) => void>>();
+    return {
+        addEventListener(type: string, fn: (e: T) => void) {
+            if (!listeners.has(type)) listeners.set(type, new Set());
+            listeners.get(type)!.add(fn);
+        },
+        removeEventListener(type: string, fn: (e: T) => void) {
+            listeners.get(type)?.delete(fn);
+        },
+        dispatch(event: T) {
+            for (const [, fns] of listeners) for (const fn of fns) fn(event);
+        },
+        listenerCount() {
+            let n = 0;
+            for (const [, fns] of listeners) n += fns.size;
+            return n;
+        },
+    };
+}
+
+/** Node.js-style event emitter mock */
+function makeNodeEmitter<T = unknown>(): NodeEventEmitterLike<T> & {
+    emit(event: string, data: T): void;
+    listenerCount(event: string): number;
+} {
+    const listeners = new Map<string, Set<(d: T) => void>>();
+    return {
+        on(event: string | symbol, fn: (d: T) => void) {
+            const key = String(event);
+            if (!listeners.has(key)) listeners.set(key, new Set());
+            listeners.get(key)!.add(fn);
+        },
+        off(event: string | symbol, fn: (d: T) => void) {
+            listeners.get(String(event))?.delete(fn);
+        },
+        emit(event: string, data: T) {
+            listeners.get(event)?.forEach(fn => fn(data));
+        },
+        listenerCount(event: string) {
+            return listeners.get(event)?.size ?? 0;
+        },
+    };
+}
+
+describe('Flux.fromEvent', () => {
+    describe('DOM EventTarget', () => {
+        it('emits events dispatched on the target', () => {
+            const target = makeDOMTarget<{ type: string }>();
+            const ts = new TestSubscriber<{ type: string }>();
+            Flux.fromEvent(target, 'click').subscribe(ts);
+            ts.requestUnbounded();
+
+            target.dispatch({ type: 'click' });
+            target.dispatch({ type: 'click' });
+
+            expect(ts.items).toHaveLength(2);
+            expect(ts.items[0]).toEqual({ type: 'click' });
+        });
+
+        it('only listens to the specified event type', () => {
+            const target = makeDOMTarget<string>();
+            const ts = new TestSubscriber<string>();
+            Flux.fromEvent(target, 'keydown').subscribe(ts);
+            ts.requestUnbounded();
+
+            target.dispatch('a');
+            expect(ts.items).toEqual(['a']);
+        });
+
+        it('removes the listener on unsubscribe', () => {
+            const target = makeDOMTarget<number>();
+            const ts = new TestSubscriber<number>();
+            Flux.fromEvent(target, 'input').subscribe(ts);
+            ts.requestUnbounded();
+
+            target.dispatch(1);
+            ts.sub.unsubscribe();
+            target.dispatch(2); // must be ignored after cancel
+
+            expect(ts.items).toEqual([1]);
+            expect(target.listenerCount()).toBe(0);
+        });
+
+        it('never completes on its own', () => {
+            const target = makeDOMTarget<string>();
+            const ts = new TestSubscriber<string>();
+            Flux.fromEvent(target, 'data').subscribe(ts);
+            ts.requestUnbounded();
+
+            target.dispatch('x');
+            expect(ts.completed).toBe(false);
+        });
+
+        it('buffers events when downstream has no demand', () => {
+            const target = makeDOMTarget<number>();
+            const ts = new TestSubscriber<number>();
+            Flux.fromEvent(target, 'tick').subscribe(ts);
+            // no request yet
+
+            target.dispatch(10);
+            target.dispatch(20);
+            expect(ts.items).toHaveLength(0);
+
+            ts.request(1);
+            expect(ts.items).toEqual([10]);
+
+            ts.request(1);
+            expect(ts.items).toEqual([10, 20]);
+        });
+
+        it('take(n) terminates and removes the listener', () => {
+            const target = makeDOMTarget<number>();
+            const ts = new TestSubscriber<number>();
+            Flux.fromEvent(target, 'tick').take(3).subscribe(ts);
+            ts.requestUnbounded();
+
+            target.dispatch(1);
+            target.dispatch(2);
+            target.dispatch(3);
+            target.dispatch(4); // past the limit
+
+            expect(ts.items).toEqual([1, 2, 3]);
+            expect(ts.completed).toBe(true);
+            expect(target.listenerCount()).toBe(0);
+        });
+
+        it('all Flux operators compose correctly', () => {
+            const target = makeDOMTarget<number>();
+            const ts = new TestSubscriber<string>();
+            Flux.fromEvent(target, 'value')
+                .filter(n => n > 0)
+                .map(n => `+${n}`)
+                .take(2)
+                .subscribe(ts);
+            ts.requestUnbounded();
+
+            target.dispatch(-1);
+            target.dispatch(1);
+            target.dispatch(2);
+
+            expect(ts.items).toEqual(['+1', '+2']);
+            expect(ts.completed).toBe(true);
+        });
+    });
+
+    describe('Node.js EventEmitter', () => {
+        it('emits data from the named event', () => {
+            const emitter = makeNodeEmitter<string>();
+            const ts = new TestSubscriber<string>();
+            Flux.fromEvent(emitter, 'data').subscribe(ts);
+            ts.requestUnbounded();
+
+            emitter.emit('data', 'hello');
+            emitter.emit('data', 'world');
+
+            expect(ts.items).toEqual(['hello', 'world']);
+        });
+
+        it('removes the listener on unsubscribe', () => {
+            const emitter = makeNodeEmitter<number>();
+            const ts = new TestSubscriber<number>();
+            Flux.fromEvent(emitter, 'tick').subscribe(ts);
+            ts.requestUnbounded();
+
+            emitter.emit('tick', 1);
+            ts.sub.unsubscribe();
+            emitter.emit('tick', 2);
+
+            expect(ts.items).toEqual([1]);
+            expect(emitter.listenerCount('tick')).toBe(0);
+        });
+
+        it('ignores events on other channels', () => {
+            const emitter = makeNodeEmitter<string>();
+            const ts = new TestSubscriber<string>();
+            Flux.fromEvent(emitter, 'data').subscribe(ts);
+            ts.requestUnbounded();
+
+            emitter.emit('other', 'ignored');
+            emitter.emit('data', 'received');
+
+            expect(ts.items).toEqual(['received']);
+        });
+
+        it('take(n) terminates the stream and removes the listener', () => {
+            const emitter = makeNodeEmitter<number>();
+            const ts = new TestSubscriber<number>();
+            Flux.fromEvent(emitter, 'msg').take(2).subscribe(ts);
+            ts.requestUnbounded();
+
+            emitter.emit('msg', 1);
+            emitter.emit('msg', 2);
+            emitter.emit('msg', 3);
+
+            expect(ts.items).toEqual([1, 2]);
+            expect(ts.completed).toBe(true);
+            expect(emitter.listenerCount('msg')).toBe(0);
+        });
     });
 });
