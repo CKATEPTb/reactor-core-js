@@ -1,5 +1,5 @@
 import {Sink} from "@/sinks/Sink";
-import {Publisher} from "@/publishers";
+import {Flux, Publisher} from "@/publishers";
 import {Subscriber, Subscription} from "@/subscriptions";
 
 /**
@@ -29,6 +29,10 @@ export abstract class AbstractMulticastSink<T, E extends { cancelled: boolean; d
 
     abstract next(value: T): void;
     protected abstract createEntry(): E;
+
+    asFlux(): Flux<T> {
+        return Flux.from(this);
+    }
 
     // ──── Hooks ──────────────────────────────────────────────────────────────
 

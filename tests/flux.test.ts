@@ -2743,3 +2743,173 @@ describe('Flux#transformDeferred', () => {
         expect(items).toEqual([10, 20, 30]);
     });
 });
+
+// ─────────────────────────── Flux#share ──────────────────────────────────────
+
+describe('Flux#share', () => {
+    it('delivers items to a single subscriber', () => {
+        const shared = Flux.just(1, 2, 3).share();
+        const ts = new TestSubscriber<number>();
+        shared.subscribe(ts);
+        ts.requestUnbounded();
+        expect(ts.items).toEqual([1, 2, 3]);
+        expect(ts.completed).toBe(true);
+    });
+
+    it('multicasts items to all current subscribers', () => {
+        const sink = Sinks.many().multicast().directBestEffort<number>();
+        const shared = Flux.from(sink).share();
+
+        const a = new TestSubscriber<number>();
+        const b = new TestSubscriber<number>();
+        shared.subscribe(a);
+        a.requestUnbounded();
+        shared.subscribe(b);
+        b.requestUnbounded();
+
+        sink.next(1);
+        sink.next(2);
+        sink.complete();
+
+        expect(a.items).toEqual([1, 2]);
+        expect(b.items).toEqual([1, 2]);
+        expect(a.completed).toBe(true);
+        expect(b.completed).toBe(true);
+    });
+
+    it('best-effort: subscriber with no demand misses items', () => {
+        const sink = Sinks.many().multicast().directBestEffort<number>();
+        const shared = Flux.from(sink).share();
+
+        const ready = new TestSubscriber<number>();
+        const slow = new TestSubscriber<number>();
+        shared.subscribe(ready);
+        ready.requestUnbounded();
+        shared.subscribe(slow);
+        // slow requests nothing
+
+        sink.next(10);
+        sink.next(20);
+        sink.complete();
+
+        expect(ready.items).toEqual([10, 20]);
+        expect(slow.items).toHaveLength(0);
+    });
+
+    it('cancels upstream when last subscriber unsubscribes', () => {
+        let upstreamCancelled = false;
+        const sink = Sinks.many().multicast().directBestEffort<number>();
+        const shared = Flux.from(sink)
+            .doFinally(() => { upstreamCancelled = true; })
+            .share();
+
+        const ts = new TestSubscriber<number>();
+        shared.subscribe(ts);
+        ts.requestUnbounded();
+
+        expect(upstreamCancelled).toBe(false);
+        ts.sub.unsubscribe();
+        expect(upstreamCancelled).toBe(true);
+    });
+
+    it('upstream is cancelled only after ALL subscribers leave', () => {
+        let upstreamCancelled = false;
+        const sink = Sinks.many().multicast().directBestEffort<number>();
+        const shared = Flux.from(sink)
+            .doFinally(() => { upstreamCancelled = true; })
+            .share();
+
+        const a = new TestSubscriber<number>();
+        const b = new TestSubscriber<number>();
+        shared.subscribe(a);
+        a.requestUnbounded();
+        shared.subscribe(b);
+        b.requestUnbounded();
+
+        a.sub.unsubscribe();
+        expect(upstreamCancelled).toBe(false);
+
+        b.sub.unsubscribe();
+        expect(upstreamCancelled).toBe(true);
+    });
+
+    it('reconnects upstream when new subscriber arrives after all left', () => {
+        // Use a generator that stays open (never calls complete) so the subscriber
+        // can unsubscribe before the source terminates — exercising the refCount reconnect.
+        let connectCount = 0;
+        let activeSink: Sink<number> | null = null;
+
+        const source = Flux.generate<number>(sink => {
+            connectCount++;
+            activeSink = sink;
+            // deliberately do NOT call complete — stays open until cancelled
+        });
+        const shared = source.share();
+
+        // ── First subscription cycle ──
+        const first = new TestSubscriber<number>();
+        shared.subscribe(first);
+        first.requestUnbounded();
+        expect(connectCount).toBe(1);
+        activeSink!.next(connectCount);      // emit 1
+        first.sub.unsubscribe();             // cancel before source completes
+
+        // ── Second subscription cycle ──
+        const second = new TestSubscriber<number>();
+        shared.subscribe(second);
+        second.requestUnbounded();           // triggers reconnect
+        expect(connectCount).toBe(2);
+        activeSink!.next(connectCount);      // emit 2
+
+        expect(first.items).toEqual([1]);
+        expect(second.items).toEqual([2]);
+    });
+
+    it('replays terminal complete to late subscriber after upstream finishes', () => {
+        const shared = Flux.just(1, 2).share();
+
+        const first = new TestSubscriber<number>();
+        shared.subscribe(first);
+        first.requestUnbounded();
+        expect(first.completed).toBe(true);
+
+        const late = new TestSubscriber<number>();
+        shared.subscribe(late);
+        late.requestUnbounded();
+        expect(late.completed).toBe(true);
+        expect(late.items).toHaveLength(0);
+    });
+
+    it('replays terminal error to late subscriber after upstream errors', () => {
+        const err = new Error('share-err');
+        const shared = Flux.error<number>(err).share();
+
+        const first = new TestSubscriber<number>();
+        shared.subscribe(first);
+        first.requestUnbounded();
+        expect(first.error).toBe(err);
+
+        const late = new TestSubscriber<number>();
+        shared.subscribe(late);
+        late.requestUnbounded();
+        expect(late.error).toBe(err);
+    });
+
+    it('propagates upstream error to all current subscribers', () => {
+        const err = new Error('multi-err');
+        const sink = Sinks.many().multicast().directBestEffort<number>();
+        const shared = Flux.from(sink).share();
+
+        const a = new TestSubscriber<number>();
+        const b = new TestSubscriber<number>();
+        shared.subscribe(a);
+        a.requestUnbounded();
+        shared.subscribe(b);
+        b.requestUnbounded();
+
+        sink.error(err);
+
+        expect(a.error).toBe(err);
+        expect(b.error).toBe(err);
+    });
+});

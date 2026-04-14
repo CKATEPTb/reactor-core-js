@@ -1,5 +1,5 @@
 import {Sink} from "@/sinks/Sink";
-import {Publisher} from "@/publishers";
+import {Flux, Publisher} from "@/publishers";
 import {Subscriber, Subscription} from "@/subscriptions";
 
 type Terminal = { kind: 'completed' } | { kind: 'error'; error: Error };
@@ -22,6 +22,10 @@ export default class EmptySink<T> implements Sink<T>, Publisher<T> {
         this.terminal = { kind: 'completed' };
         for (const s of this.subscribers) s.onComplete();
         this.subscribers.clear();
+    }
+
+    asFlux(): Flux<T> {
+        return Flux.from(this);
     }
 
     subscribe(subscriber: Subscriber<T>): Subscription {

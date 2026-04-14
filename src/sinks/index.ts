@@ -1,4 +1,4 @@
-import {Publisher} from "@/publishers";
+import {Flux, Publisher} from "@/publishers";
 import {Sink} from "@/sinks/Sink";
 import OneSink from "@/sinks/OneSink";
 import EmptySink from "@/sinks/EmptySink";
@@ -12,10 +12,11 @@ import ReplayLatestSink from "@/sinks/ReplayLatestSink";
 import ReplayLatestOrDefaultSink from "@/sinks/ReplayLatestOrDefaultSink";
 
 /**
- * A {@link Sink} that is also a cold {@link Publisher}.
- * Callers can push values via the `Sink` interface and subscribe via the `Publisher` interface.
+ * A {@link Sink} that is also a {@link Publisher}, with a convenience `asFlux()` accessor.
+ * Callers can push values via the `Sink` interface, subscribe via the `Publisher` interface,
+ * or obtain a full-featured {@link Flux} view via `asFlux()`.
  */
-export type SinkPublisher<T> = Sink<T> & Publisher<T>;
+export type SinkPublisher<T> = Sink<T> & Publisher<T> & { asFlux(): Flux<T> };
 
 export {type Sink};
 
