@@ -1004,6 +1004,90 @@ export class Mono<T> extends AbstractPipePublisher<T, Mono<T>> implements PipePu
     }
 
     /**
+     * Ignores the value emitted by this `Mono` and, upon completion, subscribes to `other`
+     * and forwards its result downstream.
+     *
+     * If `other` is omitted, returns a `Mono<void>` that completes when this `Mono` completes.
+     * Errors from this `Mono` are propagated without subscribing to `other`.
+     *
+     * @param other - Optional `Mono<V>` to subscribe to after this `Mono` completes.
+     * @returns `Mono<void>` when called with no argument; `Mono<V>` when `other` is provided.
+     *
+     * @example
+     * ```typescript
+     * // Sequencing: run A, then run B and return B's value
+     * Mono.just('ignored').then(Mono.just(42)).subscribe(v => console.log(v)); // 42
+     *
+     * // Completion signal only
+     * Mono.just('ignored').then().subscribe(undefined, undefined, () => console.log('done'));
+     * ```
+     */
+    public then(): Mono<void>;
+    public then<V>(other: Mono<V>): Mono<V>;
+    public then<V>(other?: Mono<V>): Mono<void> | Mono<V> {
+        if (!other) {
+            return new Mono<void>({
+                subscribe: (subscriber: Subscriber<void>): Subscription => {
+                    let done = false;
+                    const sub = this.source.subscribe({
+                        onSubscribe(_s) {},
+                        onNext(_v) {},
+                        onError(e) { if (!done) { done = true; subscriber.onError(e); } },
+                        onComplete() { if (!done) { done = true; subscriber.onComplete(); } }
+                    });
+                    subscriber.onSubscribe(sub);
+                    return sub;
+                }
+            });
+        }
+
+        return new Mono<V>({
+            subscribe: (subscriber: Subscriber<V>): Subscription => {
+                let outerSub: Subscription = { request() {}, unsubscribe() {} };
+                let innerSub: Subscription | null = null;
+                let cancelled = false;
+                let demand = 0;
+
+                const operatorSub: Subscription = {
+                    request(n: number) {
+                        if (cancelled) return;
+                        if (n <= 0) {
+                            subscriber.onError(new Error(`request must be > 0, but was ${n}`));
+                            return;
+                        }
+                        demand = Math.min(demand + n, Number.MAX_SAFE_INTEGER);
+                        if (innerSub) innerSub.request(n);
+                    },
+                    unsubscribe() {
+                        cancelled = true;
+                        outerSub.unsubscribe();
+                        innerSub?.unsubscribe();
+                    }
+                };
+
+                this.source.subscribe({
+                    onSubscribe(s) { outerSub = s; subscriber.onSubscribe(operatorSub); },
+                    onNext(_v) {},
+                    onError(e) { if (!cancelled) subscriber.onError(e); },
+                    onComplete() {
+                        if (cancelled) return;
+                        innerSub = other.subscribe({
+                            onSubscribe(_s) {},
+                            onNext(v) { subscriber.onNext(v); },
+                            onError(e) { subscriber.onError(e); },
+                            onComplete() { subscriber.onComplete(); }
+                        });
+                        if (demand > 0) innerSub.request(demand);
+                    }
+                });
+                outerSub.request(1);
+
+                return operatorSub;
+            }
+        });
+    }
+
+    /**
      * Delays delivery of the emitted value by `ms` milliseconds.
      *
      * The delay is introduced **after** the source emits; completion and errors

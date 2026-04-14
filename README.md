@@ -336,9 +336,19 @@ Flux.just('a', 'b', 'c')
 | Method | Description |
 |---|---|
 | `.cache()` | Subscribe to the source once; replay all items to subsequent subscribers. |
+| `.share()` | Hot multicast with refCounting — connects on first subscriber, disconnects when the last one leaves. Items are delivered best-effort (no buffering). Re-subscribes to upstream when a new subscriber arrives after all others have left. |
 | `.switchIfEmpty(alternative)` | Switch to `alternative` if source completes without emitting. |
 | `.delaySubscription(ms)` | Delay the actual subscription to the source by `ms` milliseconds. |
 | `.pipe(producer, onRequest, onUnsubscribe)` | Low-level escape hatch for building custom downstream operators. |
+
+```typescript
+// share() — multiple subscribers observe the same live upstream
+const hot = Flux.interval(500).share();
+
+hot.subscribe(v => console.log('A:', v));
+setTimeout(() => hot.subscribe(v => console.log('B:', v)), 1200);
+// A: 0, A: 1, A: 2, B: 2, A: 3, B: 3, …
+```
 
 ### FluxSink
 
@@ -413,6 +423,7 @@ sub.unsubscribe(); // cancel at any time
 | `Mono.empty()` | Complete immediately without emitting. |
 | `Mono.error(err)` | Signal `onError` immediately. |
 | `Mono.firstWithValue(...sources)` | Race: emit the first value from any of the given `Mono` sources. |
+| `Mono.when(...sources)` | `Mono<void>` that completes when **all** given publishers complete. Values are ignored; the first error is propagated and all other sources are cancelled. |
 
 ```typescript
 import { Mono } from 'reactor-core-ts';
@@ -429,6 +440,12 @@ Mono.justOrEmpty(null).subscribe(
     () => console.log('empty'),
 );
 // empty
+
+// Mono.when — wait for multiple async operations to finish
+Mono.when(
+    Mono.fromPromise(saveUser(user)),
+    Mono.fromPromise(sendEmail(user)),
+).subscribe(undefined, undefined, () => console.log('all done'));
 ```
 
 ### Mono Transformation
@@ -439,6 +456,8 @@ Mono.justOrEmpty(null).subscribe(
 | `.mapNotNull(fn)` | Transform `T → R | null | undefined`; if result is null/undefined, complete empty. |
 | `.flatMap(fn)` | Map the value to a `Mono<R>`, then subscribe to that inner Mono. |
 | `.flatMapMany(fn)` | Map the value to a `Flux<R>` or `Mono<R>`, returning a `Flux<R>`. |
+| `.then()` | `Mono<void>` — ignore the emitted value; complete when source completes. |
+| `.then(other)` | Ignore the emitted value; subscribe to `other` after source completes and return `other`'s result. |
 | `.thenReturn(value)` | Ignore the emitted value; emit `value` after source completes. |
 | `.delayElement(ms)` | Delay the emitted value by `ms` milliseconds. |
 | `.delayUntil(triggerFn)` | Hold the emitted value until the trigger publisher fires, then forward it. |
@@ -453,6 +472,18 @@ Mono.just(5)
     .flatMapMany(n => Flux.range(0, n))
     .subscribe(v => console.log(v));
 // 0  1  2  3  4
+
+// then() — sequence operations, ignore intermediate values
+Mono.just('step 1')
+    .then(Mono.just('step 2'))
+    .then(Mono.just('step 3'))
+    .subscribe(v => console.log(v));
+// 'step 3'
+
+// then() with no argument — completion signal only
+Mono.fromPromise(deleteRecord(id))
+    .then()
+    .subscribe(undefined, undefined, () => console.log('deleted'));
 ```
 
 ### Mono Filtering
@@ -547,10 +578,16 @@ const value: number | null = await Mono.just(42).toPromise();
 
 ## Sinks
 
-Sinks are imperative bridges that let external code push values into a reactive stream. The `Sinks` factory returns a `SinkPublisher<T>` — an object that implements both `Sink<T>` (push API) and `Publisher<T>` (subscribe API).
+Sinks are imperative bridges that let external code push values into a reactive stream. The `Sinks` factory returns a `SinkPublisher<T>` — an object that implements both `Sink<T>` (push API) and `Publisher<T>` (subscribe API), plus a convenience `asFlux()` method that wraps the sink as a full-featured `Flux<T>` with all operators available.
 
 ```typescript
 import { Sinks, Flux } from 'reactor-core-ts';
+
+// asFlux() gives access to all Flux operators
+const sink = Sinks.many().replay().all<number>();
+sink.next(1);
+sink.next(2);
+sink.asFlux().map(n => n * 10).subscribe(v => console.log(v)); // 10  20
 ```
 
 ### `Sinks.empty<T>()`

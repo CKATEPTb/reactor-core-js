@@ -1356,3 +1356,118 @@ describe('Mono.when', () => {
         expect(sub.values).toHaveLength(0);
     });
 });
+
+// ---------------------------------------------------------------------------
+// Mono#then
+// ---------------------------------------------------------------------------
+
+describe('Mono#then', () => {
+    describe('then() — no argument', () => {
+        test('completes when source completes', () => {
+            const sub = new TestSubscriber<void>().subscribeTo(
+                Mono.just(42).then()
+            );
+            expect(sub.completed).toBe(true);
+            expect(sub.values).toHaveLength(0);
+        });
+
+        test('ignores the emitted value', () => {
+            const sub = new TestSubscriber<void>().subscribeTo(
+                Mono.just('should be ignored').then()
+            );
+            expect(sub.values).toHaveLength(0);
+            expect(sub.completed).toBe(true);
+        });
+
+        test('completes when source is empty', () => {
+            const sub = new TestSubscriber<void>().subscribeTo(
+                Mono.empty<number>().then()
+            );
+            expect(sub.completed).toBe(true);
+        });
+
+        test('propagates source error', () => {
+            const err = new Error('then-err');
+            const sub = new TestSubscriber<void>().subscribeTo(
+                Mono.error<number>(err).then()
+            );
+            expect(sub.errors).toEqual([err]);
+            expect(sub.completed).toBe(false);
+        });
+
+        test('returns Mono<void> — does not emit any value', () => {
+            const values: void[] = [];
+            new TestSubscriber<void>().subscribeTo(
+                Mono.just(99).then().doOnSuccess(v => values.push(v))
+            );
+            expect(values).toHaveLength(0);
+        });
+    });
+
+    describe('then(other) — with argument', () => {
+        test('subscribes to other after source completes and returns other value', () => {
+            const sub = new TestSubscriber<number>().subscribeTo(
+                Mono.just('ignored').then(Mono.just(42))
+            );
+            expect(sub.values).toEqual([42]);
+            expect(sub.completed).toBe(true);
+        });
+
+        test('ignores source value, returns other value', () => {
+            const sub = new TestSubscriber<string>().subscribeTo(
+                Mono.just(999).then(Mono.just('hello'))
+            );
+            expect(sub.values).toEqual(['hello']);
+        });
+
+        test('source error stops chain — other is never subscribed', () => {
+            const err = new Error('chain-err');
+            let otherSubscribed = false;
+            const other = Mono.defer<number>(() => {
+                otherSubscribed = true;
+                return Mono.just(1);
+            });
+            const sub = new TestSubscriber<number>().subscribeTo(
+                Mono.error<string>(err).then(other)
+            );
+            expect(sub.errors).toEqual([err]);
+            expect(otherSubscribed).toBe(false);
+        });
+
+        test('empty source — other is still subscribed', () => {
+            const sub = new TestSubscriber<number>().subscribeTo(
+                Mono.empty<string>().then(Mono.just(7))
+            );
+            expect(sub.values).toEqual([7]);
+            expect(sub.completed).toBe(true);
+        });
+
+        test('other error is propagated downstream', () => {
+            const err = new Error('other-err');
+            const sub = new TestSubscriber<number>().subscribeTo(
+                Mono.just('ok').then(Mono.error<number>(err))
+            );
+            expect(sub.errors).toEqual([err]);
+            expect(sub.completed).toBe(false);
+        });
+
+        test('other empty — completes without value', () => {
+            const sub = new TestSubscriber<number>().subscribeTo(
+                Mono.just('ok').then(Mono.empty<number>())
+            );
+            expect(sub.values).toHaveLength(0);
+            expect(sub.completed).toBe(true);
+        });
+
+        test('sequencing: chain multiple then()', () => {
+            const steps: string[] = [];
+            const sub = new TestSubscriber<number>().subscribeTo(
+                Mono.fromCallable(() => { steps.push('A'); return 1; })
+                    .then(Mono.fromCallable(() => { steps.push('B'); return 2; }))
+                    .then(Mono.fromCallable(() => { steps.push('C'); return 3; }))
+            );
+            expect(steps).toEqual(['A', 'B', 'C']);
+            expect(sub.values).toEqual([3]);
+        });
+    });
+});
