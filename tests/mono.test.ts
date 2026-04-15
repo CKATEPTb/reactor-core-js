@@ -1,4 +1,4 @@
-import {Flux, Mono, Subscriber, Subscription} from '@/.';
+import {Flux, Mono, Publisher, Subscriber, Subscription} from '@/.';
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -1469,5 +1469,140 @@ describe('Mono#then', () => {
             expect(steps).toEqual(['A', 'B', 'C']);
             expect(sub.values).toEqual([3]);
         });
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Mono#thenMany
+// ---------------------------------------------------------------------------
+
+describe('Mono#thenMany', () => {
+    test('emits all items from the other publisher after source completes', () => {
+        const sub = new TestSubscriber<number>().subscribeTo(
+            Mono.just('ignored').thenMany(Flux.just(1, 2, 3))
+        );
+        expect(sub.values).toEqual([1, 2, 3]);
+        expect(sub.completed).toBe(true);
+    });
+
+    test('ignores the value emitted by the source', () => {
+        const received: string[] = [];
+        new TestSubscriber<string>().subscribeTo(
+            Mono.just('should be dropped').thenMany(Flux.just('a', 'b'))
+        );
+        // source value never reaches downstream
+        expect(received).toHaveLength(0);
+    });
+
+    test('works when source is empty — still subscribes to other', () => {
+        const sub = new TestSubscriber<number>().subscribeTo(
+            Mono.empty<void>().thenMany(Flux.just(10, 20))
+        );
+        expect(sub.values).toEqual([10, 20]);
+        expect(sub.completed).toBe(true);
+    });
+
+    test('propagates source error without subscribing to other', () => {
+        const err = new Error('src-err');
+        let otherSubscribed = false;
+        const other = Flux.defer(() => { otherSubscribed = true; return Flux.just(1); });
+        const sub = new TestSubscriber<number>().subscribeTo(
+            Mono.error<void>(err).thenMany(other)
+        );
+        expect(sub.errors).toEqual([err]);
+        expect(otherSubscribed).toBe(false);
+    });
+
+    test('propagates error from the other publisher', () => {
+        const err = new Error('other-err');
+        const sub = new TestSubscriber<number>().subscribeTo(
+            Mono.just('x').thenMany(Flux.error<number>(err))
+        );
+        expect(sub.errors).toEqual([err]);
+        expect(sub.completed).toBe(false);
+    });
+
+    test('returns Flux<V> — all Flux operators compose correctly', () => {
+        const sub = new TestSubscriber<number>().subscribeTo(
+            Mono.just('trigger')
+                .thenMany(Flux.just(1, 2, 3, 4, 5))
+                .filter(n => n % 2 === 0)
+        );
+        expect(sub.values).toEqual([2, 4]);
+    });
+
+    test('respects backpressure — honours demand from downstream', () => {
+        const received: number[] = [];
+        let sub!: Subscription;
+        const flux = Mono.just('x').thenMany(Flux.just(1, 2, 3));
+        flux.subscribe({
+            onSubscribe(s) { sub = s; },
+            onNext(v) { received.push(v); },
+            onError() {},
+            onComplete() {}
+        });
+        expect(received).toHaveLength(0);
+        sub.request(2);
+        expect(received).toEqual([1, 2]);
+    });
+
+    test('unsubscribe before source completes cancels upstream', () => {
+        let cancelled = false;
+        const slowMono: Publisher<void> = {
+            subscribe(subscriber) {
+                const s: Subscription = {
+                    request() {},
+                    unsubscribe() { cancelled = true; }
+                };
+                subscriber.onSubscribe(s);
+                return s;
+            }
+        };
+        let sub!: Subscription;
+        Mono.from(slowMono).thenMany(Flux.just(1)).subscribe({
+            onSubscribe(s) { sub = s; },
+            onNext() {},
+            onError() {},
+            onComplete() {}
+        });
+        sub.request(1);
+        sub.unsubscribe();
+        expect(cancelled).toBe(true);
+    });
+
+    test('unsubscribe after source completes cancels inner subscription', () => {
+        let innerCancelled = false;
+        const inner = Flux.just(1, 2, 3).doOnCancel(() => { innerCancelled = true; });
+        const received: number[] = [];
+        let sub!: Subscription;
+        Mono.just('x').thenMany(inner).subscribe({
+            onSubscribe(s) { sub = s; },
+            onNext(v) { received.push(v); },
+            onError() {},
+            onComplete() {}
+        });
+        sub.request(1);
+        expect(received).toEqual([1]);
+        sub.unsubscribe();
+        expect(innerCancelled).toBe(true);
+    });
+
+    test('works with Mono as other publisher', () => {
+        const sub = new TestSubscriber<string>().subscribeTo(
+            Mono.just(1).thenMany(Mono.just('hello'))
+        );
+        expect(sub.values).toEqual(['hello']);
+        expect(sub.completed).toBe(true);
+    });
+
+    test('chaining: then().thenMany() sequences correctly', () => {
+        const steps: string[] = [];
+        const sub = new TestSubscriber<number>().subscribeTo(
+            Mono.fromCallable(() => { steps.push('A'); return 'a'; })
+                .then()
+                .thenMany(Flux.defer(() => { steps.push('B'); return Flux.just(1, 2); }))
+        );
+        expect(steps).toEqual(['A', 'B']);
+        expect(sub.values).toEqual([1, 2]);
     });
 });

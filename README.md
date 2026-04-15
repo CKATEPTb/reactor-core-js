@@ -458,6 +458,7 @@ Mono.when(
 | `.flatMapMany(fn)` | Map the value to a `Flux<R>` or `Mono<R>`, returning a `Flux<R>`. |
 | `.then()` | `Mono<void>` — ignore the emitted value; complete when source completes. |
 | `.then(other)` | Ignore the emitted value; subscribe to `other` after source completes and return `other`'s result. |
+| `.thenMany(other)` | `Flux<V>` — ignore the emitted value; subscribe to `other` publisher after source completes and forward all its items. |
 | `.thenReturn(value)` | Ignore the emitted value; emit `value` after source completes. |
 | `.delayElement(ms)` | Delay the emitted value by `ms` milliseconds. |
 | `.delayUntil(triggerFn)` | Hold the emitted value until the trigger publisher fires, then forward it. |
@@ -484,6 +485,12 @@ Mono.just('step 1')
 Mono.fromPromise(deleteRecord(id))
     .then()
     .subscribe(undefined, undefined, () => console.log('deleted'));
+
+// thenMany() — ignore Mono result, emit a Flux of items
+Mono.just('init')
+    .thenMany(Flux.just(1, 2, 3))
+    .subscribe(v => console.log(v));
+// 1  2  3
 ```
 
 ### Mono Filtering
