@@ -1088,6 +1088,74 @@ export class Mono<T> extends AbstractPipePublisher<T, Mono<T>> implements PipePu
     }
 
     /**
+     * Ignores the value (or absence of a value) emitted by this `Mono` and, once
+     * the source completes, subscribes to the provided `Publisher<V>` and forwards
+     * all of its items and terminal signal downstream as a `Flux<V>`.
+     *
+     * If the source signals an error the error is forwarded immediately and `other`
+     * is never subscribed.
+     *
+     * This mirrors `Mono#thenMany` from Project Reactor.
+     *
+     * @param other - The publisher whose items should be delivered after this Mono completes.
+     * @returns A `Flux<V>` that forwards all items from `other`.
+     *
+     * @example
+     * ```typescript
+     * Mono.just('init')
+     *   .thenMany(Flux.just(1, 2, 3))
+     *   .subscribe(v => console.log(v));
+     * // 1  2  3
+     * ```
+     */
+    public thenMany<V>(other: Publisher<V>): Flux<V> {
+        return Flux.from<V>({
+            subscribe: (subscriber: Subscriber<V>): Subscription => {
+                let outerSub: Subscription = { request() {}, unsubscribe() {} };
+                let innerSub: Subscription | null = null;
+                let cancelled = false;
+                let demand = 0;
+
+                const operatorSub: Subscription = {
+                    request(n: number) {
+                        if (cancelled) return;
+                        if (n <= 0) {
+                            subscriber.onError(new Error(`request must be > 0, but was ${n}`));
+                            return;
+                        }
+                        demand = Math.min(demand + n, Number.MAX_SAFE_INTEGER);
+                        if (innerSub) innerSub.request(n);
+                    },
+                    unsubscribe() {
+                        cancelled = true;
+                        outerSub.unsubscribe();
+                        innerSub?.unsubscribe();
+                    }
+                };
+
+                this.source.subscribe({
+                    onSubscribe(s) { outerSub = s; subscriber.onSubscribe(operatorSub); },
+                    onNext(_v) {},
+                    onError(e) { if (!cancelled) subscriber.onError(e); },
+                    onComplete() {
+                        if (cancelled) return;
+                        innerSub = other.subscribe({
+                            onSubscribe(_s) {},
+                            onNext(v) { subscriber.onNext(v); },
+                            onError(e) { subscriber.onError(e); },
+                            onComplete() { subscriber.onComplete(); }
+                        });
+                        if (demand > 0) innerSub.request(demand);
+                    }
+                });
+                outerSub.request(1);
+
+                return operatorSub;
+            }
+        });
+    }
+
+    /**
      * Delays delivery of the emitted value by `ms` milliseconds.
      *
      * The delay is introduced **after** the source emits; completion and errors
