@@ -601,7 +601,14 @@ export abstract class AbstractPipePublisher<T, Self> implements Publisher<T> {
                         };
                         subscriber.onSubscribe(wrappedSub);
                     },
-                    onNext(v: T) { console.log(`${tag} onNext(${JSON.stringify(v)})`); subscriber.onNext(v); },
+                    onNext(v: T) {
+                        try {
+                            console.log(`${tag} onNext(${JSON.stringify(v)})`);
+                        } catch (e) {
+                            console.log(`${tag} onNext(`, v, ")");
+                        }
+                        subscriber.onNext(v);
+                    },
                     onError(e: Error) { console.error(`${tag} onError: ${e.message}`); subscriber.onError(e); },
                     onComplete() { console.log(`${tag} onComplete`); subscriber.onComplete(); }
                 });
