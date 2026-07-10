@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validate on Node ${{ matrix.node-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version:
+          - 22.x
+          - 24.x
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+
+      - name: Install dependencies
+        run: |
+          echo "[ci] npm ci"
+          npm ci
+
+      - name: Typecheck
+        run: |
+          echo "[ci] npm run typecheck"
+          npm run typecheck
+
+      - name: Unit tests
+        run: |
+          echo "[ci] npm run test:unit"
+          npm run test:unit
+
+      - name: Method matrix tests
+        run: |
+          echo "[ci] npm run test:matrix"
+          npm run test:matrix
+
+      - name: Operator semantics and sequence tests
+        run: |
+          echo "[ci] npm run test:operators"
+          npm run test:operators
+
+      - name: Sink parity matrix
+        run: |
+          echo "[ci] npm run test:sinks"
+          npm run test:sinks
+
+      - name: Java oracle fixture comparison
+        run: |
+          echo "[ci] npm run test:java-oracle"
+          echo "[ci] Uses committed Java fixture; does not build reactor-core or run Gradle."
+          npm run test:java-oracle
+
+      - name: Strict API parity
+        run: |
+          echo "[ci] npm run api:parity:strict"
+          npm run api:parity:strict
+
+      - name: Package dry run
+        run: |
+          echo "[ci] npm pack --dry-run"
+          npm pack --dry-run
