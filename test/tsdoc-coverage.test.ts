@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
-import ts from "typescript";
+import * as ts from "typescript/unstable/ast";
+import { API } from "typescript/unstable/sync";
 import { describe, expect, it } from "vitest";
 
 const declarationKinds = new Set<ts.SyntaxKind>([
@@ -37,18 +38,33 @@ describe("TSDoc coverage", () => {
   it("documents source files and structural declarations", () => {
     const missing: string[] = [];
     const invalidText: string[] = [];
+    const files = sourceFiles(path.join(process.cwd(), "src"));
+    const api = new API();
 
-    for (const file of sourceFiles(path.join(process.cwd(), "src"))) {
-      const sourceText = fs.readFileSync(file, "utf8");
-      const sourceFile = ts.createSourceFile(file, sourceText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-      const relativeFile = path.relative(process.cwd(), file).replace(/\\/g, "/");
+    try {
+      const snapshot = api.updateSnapshot({
+        openProjects: [path.join(process.cwd(), "tsconfig.json")],
+        openFiles: files
+      });
 
-      if (!sourceText.trimStart().startsWith("/**") || !sourceText.includes("@packageDocumentation")) {
-        missing.push(`${relativeFile}:1 missing @packageDocumentation`);
+      for (const file of files) {
+        const sourceText = fs.readFileSync(file, "utf8");
+        const sourceFile = snapshot.getDefaultProjectForFile(file)?.program.getSourceFile(file);
+        const relativeFile = path.relative(process.cwd(), file).replace(/\\/g, "/");
+
+        if (!sourceFile) {
+          missing.push(`${relativeFile}:1 missing TypeScript source file in project snapshot`);
+          continue;
+        }
+        if (!sourceText.trimStart().startsWith("/**") || !sourceText.includes("@packageDocumentation")) {
+          missing.push(`${relativeFile}:1 missing @packageDocumentation`);
+        }
+
+        visitDocumentedDeclarations(sourceFile, sourceFile, missing, relativeFile);
+        validateTSDocText(sourceText, invalidText, relativeFile);
       }
-
-      visitDocumentedDeclarations(sourceFile, sourceFile, missing, relativeFile);
-      validateTSDocText(sourceText, invalidText, relativeFile);
+    } finally {
+      api.close();
     }
 
     expect(missing).toEqual([]);
@@ -80,7 +96,7 @@ function visitDocumentedDeclarations(
     missing.push(`${relativeFile}:${position.line + 1}:${position.character + 1} missing TSDoc`);
   }
 
-  ts.forEachChild(node, child => visitDocumentedDeclarations(child, sourceFile, missing, relativeFile));
+  node.forEachChild(child => visitDocumentedDeclarations(child, sourceFile, missing, relativeFile));
 }
 
 function requiresTSDoc(node: ts.Node, sourceFile: ts.SourceFile): boolean {
@@ -91,12 +107,26 @@ function requiresTSDoc(node: ts.Node, sourceFile: ts.SourceFile): boolean {
   const parent = node.parent;
   return (
     parent === sourceFile ||
-    ts.isClassElement(node) ||
-    (ts.isTypeElement(node) && ts.isInterfaceDeclaration(parent)) ||
+    isClassElement(node) ||
+    (isTypeElement(node) && ts.isInterfaceDeclaration(parent)) ||
     ts.isEnumMember(node) ||
     (ts.isInterfaceDeclaration(node) && parent.kind === ts.SyntaxKind.ModuleBlock) ||
     isDocumentedObjectMethod(node)
   );
+}
+
+function isClassElement(node: ts.Node): boolean {
+  return (
+    node.kind === ts.SyntaxKind.Constructor ||
+    node.kind === ts.SyntaxKind.GetAccessor ||
+    node.kind === ts.SyntaxKind.MethodDeclaration ||
+    node.kind === ts.SyntaxKind.PropertyDeclaration ||
+    node.kind === ts.SyntaxKind.SetAccessor
+  );
+}
+
+function isTypeElement(node: ts.Node): boolean {
+  return node.kind === ts.SyntaxKind.MethodSignature || node.kind === ts.SyntaxKind.PropertySignature;
 }
 
 function isDocumentedObjectMethod(node: ts.Node): boolean {

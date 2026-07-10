@@ -7,11 +7,11 @@ import { Signal } from "@/signal/signal.js";
 type AnyPublisher = Flux<unknown> | Mono<unknown>;
 type FluxCase = {
   name: string;
-  apply(source: Flux<unknown>): unknown;
+  apply(source: Flux<any>): unknown;
 };
 type MonoCase = {
   name: string;
-  apply(source: Mono<unknown>): unknown;
+  apply(source: Mono<any>): unknown;
 };
 type MethodFixture = {
   readonly instance: readonly string[];

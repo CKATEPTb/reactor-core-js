@@ -6,6 +6,10 @@
   "module": "./dist/index.js",
   "browser": "./dist/index.js",
   "sideEffects": [
+    "./src/publisher/flux-entrypoint.ts",
+    "./src/publisher/mono-entrypoint.ts",
+    "./src/publisher/operators/register.ts",
+    "./src/publisher/operators/**/*.ts",
     "./dist/index.js",
     "./dist/publisher/flux-entrypoint.js",
     "./dist/publisher/mono-entrypoint.js",
@@ -79,7 +83,7 @@
   "scripts": {
     "api:parity": "npm run build && node scripts/check-api-parity.mjs",
     "api:parity:strict": "npm run build && node scripts/check-api-parity.mjs --fail",
-    "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.build.json && node scripts/rewrite-dist-aliases.mjs && node scripts/check-browser-package.mjs",
+    "build": "node scripts/clean-dist.mjs && vite build && tsc -p tsconfig.build.json --emitDeclarationOnly && node scripts/rewrite-dist-aliases.mjs && node scripts/check-browser-package.mjs",
     "check:browser": "node scripts/check-browser-package.mjs",
     "ci": "npm run typecheck && npm run test:unit && npm run test:matrix && npm run test:operators && npm run test:sinks && npm run test:java-oracle && npm run api:parity:strict && npm run pack:check",
     "fixtures:reactor": "npm run build && node scripts/java-oracle-matrix.mjs --refresh",
@@ -108,7 +112,8 @@
   },
   "devDependencies": {
     "@types/node": "^26.1.1",
-    "typescript": "^5.9.3",
-    "vitest": "^4.0.15"
+    "typescript": "^7.0.2",
+    "vite": "^8.1.4",
+    "vitest": "^4.1.10"
   }
 }

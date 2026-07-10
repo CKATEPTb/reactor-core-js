@@ -77,4 +77,14 @@ describe("built entrypoints", () => {
     expect(Object.keys(sinks)).toEqual(["Sinks"]);
     expect(Object.keys(schedulers)).toEqual(["Schedulers"]);
   });
+
+  it("registers prototype operators in built entrypoints", async () => {
+    const [{ Flux }, { Mono }] = await Promise.all([
+      import(pathToFileURL(`${process.cwd()}/dist/publisher/flux-entrypoint.js`).href),
+      import(pathToFileURL(`${process.cwd()}/dist/publisher/mono-entrypoint.js`).href)
+    ]);
+
+    await expect(Flux.just(1).map((value: number) => value + 1).toArray()).resolves.toEqual([2]);
+    await expect(Mono.just(1).map((value: number) => value + 1).block()).resolves.toBe(2);
+  });
 });
