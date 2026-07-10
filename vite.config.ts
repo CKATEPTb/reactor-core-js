@@ -27,7 +27,7 @@ export default defineConfig({
       },
       formats: ["es"]
     },
-    rollupOptions: {
+    rolldownOptions: {
       treeshake: false,
       output: {
         preserveModules: true,
