@@ -341,6 +341,11 @@ describe("Project Reactor method matrix", () => {
   it("executes scheduler variants for every scheduler-aware method", async () => {
     const schedulers = [
       Schedulers.immediate(),
+      Schedulers.micro(),
+      Schedulers.macro(),
+      Schedulers.delay(0),
+      Schedulers.interval(1),
+      Schedulers.animationFrame(),
       Schedulers.microtask(),
       Schedulers.timeout(),
       Schedulers.newSingle("matrix"),

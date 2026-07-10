@@ -896,7 +896,9 @@ unbounded streams unless you really want to keep every value in memory.
 ## Schedulers
 
 A scheduler controls when a task runs. In the browser there are no JVM-style
-thread pools, so Reactor scheduler names map to browser queues.
+thread pools, so the primary schedulers are browser queues and timers. The
+Reactor-style names remain available as aliases where they make migration
+easier.
 
 Durations can be a number of milliseconds or an object:
 
@@ -911,35 +913,39 @@ Mono.delay({ minutes: 1, seconds: 30 });
 | Scheduler | Browser implementation | Use it when | Example |
 | --- | --- | --- | --- |
 | `Schedulers.immediate()` | Runs synchronously. | You want no async boundary. | `Schedulers.immediate().schedule(task)` |
-| `Schedulers.microtask()` | Uses `queueMicrotask`. | You want to yield to the microtask queue. | `Flux.just(1).publishOn(Schedulers.microtask())` |
-| `Schedulers.timeout()` | Uses `setTimeout`. | You need delays, timers or macrotask scheduling. | `Mono.delay(100, Schedulers.timeout())` |
+| `Schedulers.micro()` | Uses `queueMicrotask`. | You want to yield to the microtask queue. | `Flux.just(1).publishOn(Schedulers.micro())` |
+| `Schedulers.macro()` | Uses `setTimeout`. | You need a macrotask boundary. | `Mono.delay(100, Schedulers.macro())` |
+| `Schedulers.delay(ms)` | Uses `setTimeout` with a default delay. | You want a reusable one-shot delay scheduler. | `Schedulers.delay(250).schedule(task)` |
+| `Schedulers.interval(ms)` | Uses `setInterval` for periodic scheduling defaults. | You want a reusable periodic cadence. | `Schedulers.interval(1000).schedulePeriodically(tick)` |
 | `Schedulers.animationFrame()` | Uses `requestAnimationFrame` when available. | UI work should align with painting. | `Schedulers.animationFrame().schedule(render)` |
-| `Schedulers.single()` | Shared microtask scheduler. | Reactor-style single scheduler in browser code. | `Flux.just(1).subscribeOn(Schedulers.single())` |
-| `Schedulers.parallel()` | Shared microtask scheduler. | Reactor-style parallel API shape without browser threads. | `Flux.just(1).publishOn(Schedulers.parallel())` |
-| `Schedulers.boundedElastic()` | Shared timeout scheduler. | Timer-backed async boundaries. | `Mono.fromCallable(load).subscribeOn(Schedulers.boundedElastic())` |
+| `Schedulers.microtask()` | Alias of `micro()`. | Legacy explicit microtask naming. | `Flux.just(1).publishOn(Schedulers.microtask())` |
+| `Schedulers.timeout()` | Alias of `macro()`. | Legacy timeout-backed scheduling. | `Mono.delay(100, Schedulers.timeout())` |
+| `Schedulers.single()` | Alias of `micro()`. | Reactor-style single scheduler in browser code. | `Flux.just(1).subscribeOn(Schedulers.single())` |
+| `Schedulers.parallel()` | Alias of `micro()`. | Reactor-style parallel API shape without browser threads. | `Flux.just(1).publishOn(Schedulers.parallel())` |
+| `Schedulers.boundedElastic()` | Alias of `macro()`. | Timer-backed async boundaries. | `Mono.fromCallable(load).subscribeOn(Schedulers.boundedElastic())` |
 | `Schedulers.newSingle(name?)` | New microtask scheduler instance. | You want a named isolated scheduler object. | `Schedulers.newSingle("ui")` |
 | `Schedulers.newParallel(name?)` | New microtask scheduler instance. | You want Reactor-compatible naming. | `Schedulers.newParallel("workers")` |
-| `Schedulers.newBoundedElastic(name?)` | New timeout scheduler instance. | You want a named timer-backed scheduler. | `Schedulers.newBoundedElastic("io")` |
+| `Schedulers.newBoundedElastic(name?)` | New macrotask scheduler instance. | You want a named timer-backed scheduler. | `Schedulers.newBoundedElastic("io")` |
 | `Schedulers.fromExecutor(executor, name?)` | Wraps your executor function. | You need custom scheduling. | `Schedulers.fromExecutor(task => postTask(task), "postTask")` |
 
 ### Standalone Scheduler Usage
 
 ```ts
-const scheduler = Schedulers.timeout();
+const scheduler = Schedulers.delay(250);
 
 const delayed: Disposable = scheduler.schedule(() => {
   console.log("runs later");
-}, 250);
+});
 
 // Cancel before it runs.
 delayed.dispose();
 ```
 
 ```ts
-const worker = Schedulers.timeout().createWorker();
+const worker = Schedulers.interval(1_000).createWorker();
 
 worker.schedule(() => console.log("first"), 100);
-worker.schedulePeriodically(() => console.log("tick"), 0, 1_000);
+worker.schedulePeriodically(() => console.log("tick"));
 
 // Disposes every task scheduled by this worker.
 worker.dispose();
@@ -950,7 +956,7 @@ worker.dispose();
 Use scheduler-aware factories and operators when timing matters.
 
 ```ts
-const ticks = await Flux.interval(100, Schedulers.timeout())
+const ticks = await Flux.interval(100, Schedulers.macro())
   .take(3)
   .toArray();
 
@@ -959,8 +965,8 @@ console.log(ticks); // [0, 1, 2]
 
 ```ts
 const value = await Mono.fromCallable(() => JSON.parse(raw))
-  .subscribeOn(Schedulers.timeout())
-  .publishOn(Schedulers.microtask())
+  .subscribeOn(Schedulers.macro())
+  .publishOn(Schedulers.micro())
   .timeout({ seconds: 1 }, Mono.just({ fallback: true }))
   .block();
 ```
@@ -971,7 +977,7 @@ downstream delivery continues.
 ```ts
 await Flux.just(1, 2)
   .doOnNext(value => console.log("before", value))
-  .publishOn(Schedulers.microtask())
+  .publishOn(Schedulers.micro())
   .doOnNext(value => console.log("after", value))
   .then()
   .block();
