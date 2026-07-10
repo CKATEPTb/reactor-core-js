@@ -1,0 +1,69 @@
+{
+  "name": "reactor-core-ts",
+  "version": "0.1.0",
+  "description": "Browser-first TypeScript implementation inspired by Project Reactor Core.",
+  "type": "module",
+  "sideEffects": [
+    "./dist/publishers/index.js",
+    "./dist/publishers/operators/**/*.js"
+  ],
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./flux": {
+      "types": "./dist/flux/index.d.ts",
+      "import": "./dist/flux/index.js"
+    },
+    "./mono": {
+      "types": "./dist/mono/index.d.ts",
+      "import": "./dist/mono/index.js"
+    },
+    "./sinks": {
+      "types": "./dist/sinks/index.d.ts",
+      "import": "./dist/sinks/index.js"
+    },
+    "./schedulers": {
+      "types": "./dist/schedulers/index.d.ts",
+      "import": "./dist/schedulers/index.js"
+    },
+    "./reactive-streams": {
+      "types": "./dist/reactive-streams/index.d.ts",
+      "import": "./dist/reactive-streams/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "api:parity": "npm run build && node scripts/check-api-parity.mjs",
+    "api:parity:strict": "npm run build && node scripts/check-api-parity.mjs --fail",
+    "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/rewrite-dist-aliases.mjs",
+    "ci": "npm run typecheck && npm run test:unit && npm run test:matrix && npm run test:operators && npm run test:sinks && npm run test:java-oracle && npm run api:parity:strict",
+    "test:java-oracle": "npm run build && node scripts/java-oracle-matrix.mjs",
+    "test:java-oracle:java": "npm run build && node scripts/java-oracle-matrix.mjs --java",
+    "test:java-oracle:refresh": "npm run build && node scripts/java-oracle-matrix.mjs --refresh",
+    "test:matrix": "npm run build && vitest run test/method-matrix.test.ts --reporter=verbose",
+    "test:operators": "vitest run test/operator-semantics.test.ts test/reactive-sequence.test.ts --reporter=verbose",
+    "test:sinks": "vitest run test/sinks-matrix.test.ts --reporter=verbose",
+    "test:unit": "npm run build && vitest run test/dist-entrypoints.test.ts test/public-api.test.ts test/reactor-core.test.ts test/scheduler.test.ts test/tsdoc-coverage.test.ts",
+    "test": "npm run build && vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "keywords": [
+    "reactive-streams",
+    "reactor",
+    "flux",
+    "mono",
+    "browser"
+  ],
+  "license": "Apache-2.0",
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.15"
+  }
+}
