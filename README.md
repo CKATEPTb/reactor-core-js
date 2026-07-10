@@ -31,7 +31,7 @@ For this repository:
 ```sh
 npm install
 npm run build
-npm run ci
+npm test
 ```
 
 ## Public Imports
@@ -1007,19 +1007,12 @@ Flux.interval(16, Schedulers.animationFrame())
 
 | Script | Purpose |
 | --- | --- |
-| `npm run build` | Clean `dist`, compile TypeScript and rewrite path aliases. |
-| `npm run typecheck` | Type-check without emitting files. |
-| `npm run test:unit` | Run public API, entrypoint, scheduler and TSDoc tests. |
-| `npm run test:matrix` | Run method matrix coverage. |
-| `npm run test:operators` | Run operator behavior tests. |
-| `npm run test:sinks` | Run sink parity tests. |
-| `npm run test:java-oracle` | Compare TypeScript behavior with the committed Reactor oracle fixture. |
-| `npm run api:parity:strict` | Compare the public API with the committed Reactor API fixture. |
-| `npm run fixtures:reactor` | Manually download Maven Reactor artifacts and regenerate the committed fixture. |
-| `npm run ci` | Run the full validation pipeline. |
+| `npm run build` | Clean `dist`, build the package with Vite and emit declarations. |
+| `npm test` | Run type-checking, build, Vitest, Java oracle, API parity and package dry-run checks. |
+| `npm run generate-fixtures` | Manually download Maven Reactor artifacts and regenerate the committed fixture. |
 
 Tests read only the committed fixture in `test/fixtures`. They never expect a
-local Project Reactor checkout next to this repository. The `fixtures:reactor`
+local Project Reactor checkout next to this repository. The `generate-fixtures`
 script is manual and refreshes that fixture from Maven artifacts.
 
 ## Practical Rules

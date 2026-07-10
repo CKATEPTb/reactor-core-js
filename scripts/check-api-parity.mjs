@@ -17,7 +17,7 @@ const fixture = JSON.parse(fs.readFileSync(fixturePath, "utf8"));
 const expectedApi = fixture.api;
 
 if (!expectedApi?.Flux || !expectedApi?.Mono || !expectedApi?.Sinks) {
-  console.error(`API fixture is missing in ${fixturePath}. Run npm run fixtures:reactor to refresh test fixtures.`);
+  console.error(`API fixture is missing in ${fixturePath}. Run npm run generate-fixtures to refresh test fixtures.`);
   process.exit(2);
 }
 

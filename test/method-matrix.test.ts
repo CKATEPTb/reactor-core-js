@@ -936,7 +936,7 @@ function javaOracleTraces(): Record<string, unknown> {
 function fixtureMethods(className: "Flux" | "Mono"): MethodFixture {
   const api = reactorFixture().api?.[className];
   if (!api) {
-    throw new Error(`Missing ${className} API fixture. Run npm run fixtures:reactor to refresh test fixtures.`);
+    throw new Error(`Missing ${className} API fixture. Run npm run generate-fixtures to refresh test fixtures.`);
   }
   return api;
 }
