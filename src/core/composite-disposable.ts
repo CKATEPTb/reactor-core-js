@@ -9,7 +9,7 @@ export class CompositeDisposable implements Disposable {
     /** Tracks whether this composite has already been disposed. */
     private disposed = false;
     /** Child disposables still owned by this composite. */
-    private readonly disposables = new Set<Disposable>();
+    private disposables: Disposable | Set<Disposable> | undefined;
 
     /** Adds a child disposable unless this composite has already been disposed. */
     public add(disposable: Disposable): boolean {
@@ -17,13 +17,33 @@ export class CompositeDisposable implements Disposable {
             disposable.dispose();
             return false;
         }
-        this.disposables.add(disposable);
+        if (this.disposables === undefined) {
+            this.disposables = disposable;
+        } else if (this.disposables instanceof Set) {
+            this.disposables.add(disposable);
+        } else if (this.disposables !== disposable) {
+            this.disposables = new Set([this.disposables, disposable]);
+        }
         return true;
     }
 
     /** Removes a child disposable without disposing it. */
     public remove(disposable: Disposable): boolean {
-        return this.disposables.delete(disposable);
+        if (this.disposables === undefined) {
+            return false;
+        }
+        if (this.disposables instanceof Set) {
+            const removed = this.disposables.delete(disposable);
+            if (this.disposables.size === 0) {
+                this.disposables = undefined;
+            }
+            return removed;
+        }
+        if (this.disposables !== disposable) {
+            return false;
+        }
+        this.disposables = undefined;
+        return true;
     }
 
     /** Disposes all children and prevents future additions. */
@@ -32,10 +52,19 @@ export class CompositeDisposable implements Disposable {
             return;
         }
         this.disposed = true;
-        for (const disposable of this.disposables) {
-            disposable.dispose();
+        const disposables = this.disposables;
+        this.disposables = undefined;
+        if (disposables === undefined) {
+            return;
         }
-        this.disposables.clear();
+        if (disposables instanceof Set) {
+            for (const disposable of disposables) {
+                disposable.dispose();
+            }
+            disposables.clear();
+            return;
+        }
+        disposables.dispose();
     }
 
     /** Returns true after this composite has been disposed. */

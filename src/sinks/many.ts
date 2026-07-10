@@ -2,10 +2,17 @@
  * @packageDocumentation
  * Sink specifications and default browser-oriented sink implementations.
  */
-import {AsyncQueue} from "@/internal/index.js";
-import {Flux} from "@/publishers/flux.js";
-import type {PublisherInput} from "@/publishers/types.js";
-import {SignalType} from "@/signal/index.js";
+import {AsyncQueue} from "@/internal/async-queue.js";
+import {Flux} from "@/publisher/flux.js";
+import type {PublisherInput} from "@/publisher/types.js";
+import {SignalType} from "@/signal/signal-type.js";
+import {
+    addSinkSubscriber,
+    clearSinkSubscribers,
+    removeSinkSubscriber,
+    sinkSubscriberCount,
+    type SinkSubscribers
+} from "@/sinks/subscribers.js";
 import {type EmitFailureHandler, EmitFailureHandlers, emitOrThrow, EmitResult, type ManySink} from "@/sinks/types.js";
 
 /** Delivery mode supported by the default many-valued sink. */
@@ -24,11 +31,11 @@ export interface ManyOptions<T> {
 /** Default implementation for unicast, multicast and replay many-valued sinks. */
 export class DefaultManySink<T> implements ManySink<T> {
     /** Active subscriber queues currently receiving live values. */
-    private readonly subscribers = new Set<AsyncQueue<T>>();
+    private subscribers: SinkSubscribers<T> | undefined;
     /** Values buffered before a non-replay sink receives its first subscriber. */
-    private pending: T[] = [];
+    private pending: T[] | undefined;
     /** Values retained for replay subscribers. */
-    private readonly history: T[] = [];
+    private history: T[] | undefined;
     /** Ring-buffer index of the oldest replay value. */
     private historyHead = 0;
     /** Terminal state when the sink has completed or failed. */
@@ -44,7 +51,7 @@ export class DefaultManySink<T> implements ManySink<T> {
     public constructor(options: ManyOptions<T>) {
         this.options = options;
         if (options.latestDefault !== undefined) {
-            this.historyHead = rememberHistory(this.history, this.historyHead, options.replayLimit, options.latestDefault);
+            this.rememberHistory(options.latestDefault);
         }
     }
 
@@ -59,12 +66,15 @@ export class DefaultManySink<T> implements ManySink<T> {
             if (isUnicast(this.options.mode)) {
                 this.unicastAttached = true;
             }
-            for (let index = 0; index < this.history.length; index += 1) {
-                queue.push(historyValue(this.history, this.historyHead, index));
+            const history = this.history;
+            if (history) {
+                for (let index = 0; index < history.length; index += 1) {
+                    queue.push(historyValue(history, this.historyHead, index));
+                }
             }
-            if (this.pending.length > 0) {
+            if (this.pending && this.pending.length > 0) {
                 const pending = this.pending;
-                this.pending = [];
+                this.pending = undefined;
                 for (const value of pending) {
                     queue.push(value);
                 }
@@ -74,8 +84,7 @@ export class DefaultManySink<T> implements ManySink<T> {
             } else if (this.terminated === "error") {
                 queue.error(this.errorValue);
             } else {
-                this.subscribers.add(queue);
-                signal.addEventListener("abort", () => this.subscribers.delete(queue), {once: true});
+                this.addSubscriber(queue, signal);
             }
             return queue;
         });
@@ -87,19 +96,24 @@ export class DefaultManySink<T> implements ManySink<T> {
             return EmitResult.FAIL_TERMINATED;
         }
         if (this.options.mode === "replay") {
-            this.historyHead = rememberHistory(this.history, this.historyHead, this.options.replayLimit, value);
+            this.rememberHistory(value);
         }
-        if (this.subscribers.size === 0) {
+        const subscribers = this.subscribers;
+        if (!subscribers) {
             if (this.options.mode === "multicast-direct" || this.options.mode === "unicast-error") {
                 return EmitResult.FAIL_ZERO_SUBSCRIBER;
             }
             if (this.options.mode !== "replay") {
-                this.pending.push(value);
+                (this.pending ??= []).push(value);
             }
             return EmitResult.OK;
         }
-        for (const subscriber of this.subscribers) {
-            subscriber.push(value);
+        if (subscribers instanceof Set) {
+            for (const subscriber of subscribers) {
+                subscriber.push(value);
+            }
+        } else {
+            subscribers.push(value);
         }
         return EmitResult.OK;
     }
@@ -109,14 +123,19 @@ export class DefaultManySink<T> implements ManySink<T> {
         if (this.terminated) {
             return EmitResult.FAIL_TERMINATED;
         }
-        if (this.options.mode === "unicast-error" && this.subscribers.size === 0) {
+        const subscribers = this.subscribers;
+        if (this.options.mode === "unicast-error" && !subscribers) {
             return EmitResult.FAIL_ZERO_SUBSCRIBER;
         }
         this.terminated = "complete";
-        for (const subscriber of this.subscribers) {
-            subscriber.complete();
+        if (subscribers instanceof Set) {
+            for (const subscriber of subscribers) {
+                subscriber.complete();
+            }
+        } else if (subscribers) {
+            subscribers.complete();
         }
-        this.subscribers.clear();
+        this.clearSubscribers();
         return EmitResult.OK;
     }
 
@@ -125,15 +144,20 @@ export class DefaultManySink<T> implements ManySink<T> {
         if (this.terminated) {
             return EmitResult.FAIL_TERMINATED;
         }
-        if (this.options.mode === "unicast-error" && this.subscribers.size === 0) {
+        const subscribers = this.subscribers;
+        if (this.options.mode === "unicast-error" && !subscribers) {
             return EmitResult.FAIL_ZERO_SUBSCRIBER;
         }
         this.terminated = "error";
         this.errorValue = error;
-        for (const subscriber of this.subscribers) {
-            subscriber.error(error);
+        if (subscribers instanceof Set) {
+            for (const subscriber of subscribers) {
+                subscriber.error(error);
+            }
+        } else if (subscribers) {
+            subscribers.error(error);
         }
-        this.subscribers.clear();
+        this.clearSubscribers();
         return EmitResult.OK;
     }
 
@@ -154,7 +178,7 @@ export class DefaultManySink<T> implements ManySink<T> {
 
     /** Returns the current number of active subscribers. */
     public currentSubscriberCount(): number {
-        return this.subscribers.size;
+        return sinkSubscriberCount(this.subscribers);
     }
 
     /** Subscribes this sink to an upstream publisher and relays its signals. */
@@ -170,25 +194,48 @@ export class DefaultManySink<T> implements ManySink<T> {
     public onEmitFailure(_signalType: SignalType, _emitResult: EmitResult): boolean {
         return false;
     }
+
+    /** Adds a subscriber queue and removes it again when its subscription is cancelled. */
+    private addSubscriber(queue: AsyncQueue<T>, signal: AbortSignal): void {
+        this.subscribers = addSinkSubscriber(this.subscribers, queue);
+        signal.addEventListener("abort", () => this.removeSubscriber(queue), {once: true});
+    }
+
+    /** Removes a subscriber queue and releases the set when it becomes empty. */
+    private removeSubscriber(queue: AsyncQueue<T>): void {
+        this.subscribers = removeSinkSubscriber(this.subscribers, queue);
+    }
+
+    /** Clears and releases all active subscriber queues. */
+    private clearSubscribers(): void {
+        clearSinkSubscribers(this.subscribers);
+        this.subscribers = undefined;
+    }
+
+    /** Records one value into replay history, allocating history only for replay sinks. */
+    private rememberHistory(value: T): void {
+        const limit = this.options.replayLimit ?? Number.POSITIVE_INFINITY;
+        if (limit <= 0) {
+            return;
+        }
+        const history = this.history;
+        if (!history) {
+            this.history = [value];
+            this.historyHead = 0;
+            return;
+        }
+        if (history.length < limit) {
+            history.push(value);
+            return;
+        }
+        history[this.historyHead] = value;
+        this.historyHead = (this.historyHead + 1) % history.length;
+    }
 }
 
 /** Returns true for sink modes that allow exactly one subscriber. */
 function isUnicast(mode: ManyMode): boolean {
     return mode === "unicast" || mode === "unicast-error";
-}
-
-/** Records a value into replay history and returns the updated ring-buffer head. */
-function rememberHistory<T>(history: T[], head: number, replayLimit: number | undefined, value: T): number {
-    const limit = replayLimit ?? Number.POSITIVE_INFINITY;
-    if (limit <= 0) {
-        return head;
-    }
-    if (history.length < limit) {
-        history.push(value);
-        return head;
-    }
-    history[head] = value;
-    return (head + 1) % history.length;
 }
 
 /** Returns a replay history value in oldest-to-newest order. */

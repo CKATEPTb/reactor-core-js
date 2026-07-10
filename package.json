@@ -3,9 +3,14 @@
   "version": "0.1.0",
   "description": "Browser-first TypeScript implementation inspired by Project Reactor Core.",
   "type": "module",
+  "module": "./dist/index.js",
+  "browser": "./dist/index.js",
   "sideEffects": [
-    "./dist/publishers/index.js",
-    "./dist/publishers/operators/**/*.js"
+    "./dist/index.js",
+    "./dist/publisher/flux-entrypoint.js",
+    "./dist/publisher/mono-entrypoint.js",
+    "./dist/publisher/operators/register.js",
+    "./dist/publisher/operators/**/*.js"
   ],
   "files": [
     "dist",
@@ -14,27 +19,59 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "browser": "./dist/index.js",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
     },
     "./flux": {
-      "types": "./dist/flux/index.d.ts",
-      "import": "./dist/flux/index.js"
+      "types": "./dist/publisher/flux-entrypoint.d.ts",
+      "browser": "./dist/publisher/flux-entrypoint.js",
+      "import": "./dist/publisher/flux-entrypoint.js",
+      "default": "./dist/publisher/flux-entrypoint.js"
     },
     "./mono": {
-      "types": "./dist/mono/index.d.ts",
-      "import": "./dist/mono/index.js"
+      "types": "./dist/publisher/mono-entrypoint.d.ts",
+      "browser": "./dist/publisher/mono-entrypoint.js",
+      "import": "./dist/publisher/mono-entrypoint.js",
+      "default": "./dist/publisher/mono-entrypoint.js"
     },
     "./sinks": {
       "types": "./dist/sinks/index.d.ts",
-      "import": "./dist/sinks/index.js"
+      "browser": "./dist/sinks/index.js",
+      "import": "./dist/sinks/index.js",
+      "default": "./dist/sinks/index.js"
     },
     "./schedulers": {
       "types": "./dist/schedulers/index.d.ts",
-      "import": "./dist/schedulers/index.js"
+      "browser": "./dist/schedulers/index.js",
+      "import": "./dist/schedulers/index.js",
+      "default": "./dist/schedulers/index.js"
     },
     "./reactive-streams": {
-      "types": "./dist/reactive-streams/index.d.ts",
-      "import": "./dist/reactive-streams/index.js"
+      "types": "./dist/subscription/reactive-streams.d.ts",
+      "browser": "./dist/subscription/reactive-streams.js",
+      "import": "./dist/subscription/reactive-streams.js",
+      "default": "./dist/subscription/reactive-streams.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "typesVersions": {
+    "*": {
+      "flux": [
+        "dist/publisher/flux-entrypoint.d.ts"
+      ],
+      "mono": [
+        "dist/publisher/mono-entrypoint.d.ts"
+      ],
+      "schedulers": [
+        "dist/schedulers/index.d.ts"
+      ],
+      "sinks": [
+        "dist/sinks/index.d.ts"
+      ],
+      "reactive-streams": [
+        "dist/subscription/reactive-streams.d.ts"
+      ]
     }
   },
   "main": "./dist/index.js",
@@ -42,8 +79,11 @@
   "scripts": {
     "api:parity": "npm run build && node scripts/check-api-parity.mjs",
     "api:parity:strict": "npm run build && node scripts/check-api-parity.mjs --fail",
-    "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/rewrite-dist-aliases.mjs",
-    "ci": "npm run typecheck && npm run test:unit && npm run test:matrix && npm run test:operators && npm run test:sinks && npm run test:java-oracle && npm run api:parity:strict",
+    "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.build.json && node scripts/rewrite-dist-aliases.mjs && node scripts/check-browser-package.mjs",
+    "check:browser": "node scripts/check-browser-package.mjs",
+    "ci": "npm run typecheck && npm run test:unit && npm run test:matrix && npm run test:operators && npm run test:sinks && npm run test:java-oracle && npm run api:parity:strict && npm run pack:check",
+    "pack:check": "npm pack --dry-run --json",
+    "prepack": "npm run build",
     "test:java-oracle": "npm run build && node scripts/java-oracle-matrix.mjs",
     "test:java-oracle:java": "npm run build && node scripts/java-oracle-matrix.mjs --java",
     "test:java-oracle:refresh": "npm run build && node scripts/java-oracle-matrix.mjs --refresh",
@@ -52,7 +92,9 @@
     "test:sinks": "vitest run test/sinks-matrix.test.ts --reporter=verbose",
     "test:unit": "npm run build && vitest run test/dist-entrypoints.test.ts test/public-api.test.ts test/reactor-core.test.ts test/scheduler.test.ts test/tsdoc-coverage.test.ts",
     "test": "npm run build && vitest run",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "npm run typecheck:src && npm run typecheck:test",
+    "typecheck:src": "tsc -p tsconfig.build.json --noEmit",
+    "typecheck:test": "tsc -p tsconfig.json"
   },
   "keywords": [
     "reactive-streams",
@@ -62,7 +104,11 @@
     "browser"
   ],
   "license": "Apache-2.0",
+  "publishConfig": {
+    "access": "public"
+  },
   "devDependencies": {
+    "@types/node": "^26.1.1",
     "typescript": "^5.9.3",
     "vitest": "^4.0.15"
   }

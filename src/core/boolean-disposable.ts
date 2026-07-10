@@ -9,7 +9,7 @@ export class BooleanDisposable implements Disposable {
     /** Tracks whether disposal already happened. */
     private disposed = false;
     /** Optional cleanup callback invoked on first disposal. */
-    private readonly teardown: (() => void) | undefined;
+    private teardown: (() => void) | undefined;
 
     /** Creates a disposable that runs `teardown` once when disposed. */
     public constructor(teardown?: () => void) {
@@ -22,7 +22,9 @@ export class BooleanDisposable implements Disposable {
             return;
         }
         this.disposed = true;
-        this.teardown?.();
+        const teardown = this.teardown;
+        this.teardown = undefined;
+        teardown?.();
     }
 
     /** Returns true once this disposable has been released. */

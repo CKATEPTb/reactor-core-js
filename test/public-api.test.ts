@@ -5,6 +5,7 @@ describe("public package surface", () => {
     const api = await import("@/index.js");
 
     expect(Object.keys(api).sort()).toEqual([
+      "Context",
       "Flux",
       "Mono",
       "Schedulers",
@@ -12,10 +13,16 @@ describe("public package surface", () => {
     ]);
   });
 
+  it("exposes Context from the package root", async () => {
+    const { Context } = await import("@/index.js");
+
+    expect(Context.empty().put("requestId", "abc").get("requestId")).toBe("abc");
+  });
+
   it("supports focused subpath-style source entrypoints", async () => {
     const [{ Flux }, { Mono }, { Sinks }, { Schedulers }] = await Promise.all([
-      import("@/flux/index.js"),
-      import("@/mono/index.js"),
+      import("@/publisher/flux-entrypoint.js"),
+      import("@/publisher/mono-entrypoint.js"),
       import("@/sinks/index.js"),
       import("@/schedulers/index.js")
     ]);

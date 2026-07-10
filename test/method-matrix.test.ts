@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { Flux, Mono, Schedulers } from "@/index.js";
-import { Signal } from "@/signal/index.js";
+import { Signal } from "@/signal/signal.js";
 
 type AnyPublisher = Flux<unknown> | Mono<unknown>;
 type FluxCase = {
@@ -364,7 +364,7 @@ const fluxStaticCases: Array<{ name: string; apply(): unknown }> = [
   { name: "defer", apply: () => Flux.defer(() => Flux.just(1)) },
   { name: "deferContextual", apply: () => Flux.deferContextual(() => Flux.just(1)) },
   { name: "empty", apply: () => Flux.empty() },
-  { name: "error", apply: () => Flux.error(new Error("matrix")).onErrorReturn(1) },
+  { name: "error", apply: () => Flux.error<number>(new Error("matrix")).onErrorReturn(1) },
   { name: "first", apply: () => Flux.first(Flux.empty(), Flux.just(1)) },
   { name: "firstWithSignal", apply: () => Flux.firstWithSignal(Flux.just(1), Flux.just(2)) },
   { name: "firstWithValue", apply: () => Flux.firstWithValue(Flux.empty(), Flux.just(1)) },
@@ -399,7 +399,7 @@ const monoStaticCases: Array<{ name: string; apply(): unknown }> = [
   { name: "deferContextual", apply: () => Mono.deferContextual(() => Mono.just(1)) },
   { name: "delay", apply: () => Mono.delay(0, Schedulers.immediate()) },
   { name: "empty", apply: () => Mono.empty() },
-  { name: "error", apply: () => Mono.error(new Error("matrix")).onErrorReturn(1) },
+  { name: "error", apply: () => Mono.error<number>(new Error("matrix")).onErrorReturn(1) },
   { name: "first", apply: () => Mono.first(Mono.empty(), Mono.just(1)) },
   { name: "firstWithSignal", apply: () => Mono.firstWithSignal(Mono.just(1), Mono.just(2)) },
   { name: "firstWithValue", apply: () => Mono.firstWithValue(Mono.empty(), Mono.just(1)) },
@@ -523,7 +523,7 @@ const fluxCases: FluxCase[] = [
   { name: "publishNext", apply: source => source.publishNext() },
   { name: "publishOn", apply: source => source.publishOn(Schedulers.immediate()) },
   { name: "reduce", apply: source => source.reduce((left, right) => right ?? left) },
-  { name: "reduceWith", apply: source => source.reduceWith(() => 0, (_accumulated, value) => value) },
+  { name: "reduceWith", apply: source => source.reduceWith(() => 0, () => 1) },
   { name: "repeat", apply: source => source.repeat(1) },
   { name: "repeatWhen", apply: source => source.repeatWhen(() => Flux.empty()) },
   { name: "replay", apply: source => source.replay() },
@@ -533,7 +533,7 @@ const fluxCases: FluxCase[] = [
   { name: "sampleFirst", apply: source => source.sampleFirst(0, Schedulers.immediate()) },
   { name: "sampleTimeout", apply: source => source.sampleTimeout(() => Flux.empty()) },
   { name: "scan", apply: source => source.scan((left, right) => right ?? left) },
-  { name: "scanWith", apply: source => source.scanWith(() => 0, (_accumulated, value) => value) },
+  { name: "scanWith", apply: source => source.scanWith(() => 0, () => 1) },
   { name: "share", apply: source => source.share() },
   { name: "shareNext", apply: source => source.shareNext() },
   { name: "single", apply: source => source.take(1).single(0) },
@@ -948,8 +948,8 @@ function javaMethods(className: "Flux" | "Mono"): { static: Set<string>; instanc
   const instanceMethods = new Set<string>();
   const methodPattern = /\bpublic\s+(static|final|abstract)\s+([^;{}=]*?)\s+([a-zA-Z_$][\w$]*)\s*\(/g;
   for (const match of body.matchAll(methodPattern)) {
-    const kind = match[1];
-    const name = match[3];
+    const kind = match[1]!;
+    const name = match[3]!;
     if (name === "Flux" || name === "Mono") {
       continue;
     }

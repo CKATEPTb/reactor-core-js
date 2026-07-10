@@ -2,7 +2,8 @@
  * @packageDocumentation
  * Internal async iteration and cancellation utilities.
  */
-import {CancelledError} from "@/errors/index.js";
+import {CancelledError} from "@/errors/classes.js";
+import {doneResult, resolvedDoneResult} from "@/internal/iterable.js";
 
 /** Iterable queue used to bridge push-based producers to async iteration. */
 export class AsyncQueue<T> implements AsyncIterable<T> {
@@ -25,17 +26,25 @@ export class AsyncQueue<T> implements AsyncIterable<T> {
     private failed = false;
     /** Terminal failure delivered to current and future consumers. */
     private failure: unknown;
+    /** Abort signal watched by this queue, when cancellation is enabled. */
+    private abortSignal: AbortSignal | undefined;
+    /** Listener registered on the abort signal. */
+    private abortListener: (() => void) | undefined;
 
     /** Creates a queue that is optionally cancelled by an abort signal. */
-    public constructor(private readonly signal?: AbortSignal) {
+    public constructor(signal?: AbortSignal) {
+        this.abortSignal = signal;
         if (signal) {
-            signal.addEventListener(
-                "abort",
-                () => {
-                    this.error(new CancelledError());
-                },
-                {once: true}
-            );
+            if (signal.aborted) {
+                this.failed = true;
+                this.failure = new CancelledError();
+                this.abortSignal = undefined;
+                return;
+            }
+            this.abortListener = () => {
+                this.error(new CancelledError());
+            };
+            signal.addEventListener("abort", this.abortListener, {once: true});
         }
     }
 
@@ -59,9 +68,11 @@ export class AsyncQueue<T> implements AsyncIterable<T> {
             return;
         }
         this.closed = true;
+        this.clearAbortListener();
+        const done = doneResult<T>();
         for (let index = this.waiterHead; index < this.waiters.length; index += 1) {
             const waiter = this.waiters[index]!;
-            waiter.resolve({done: true, value: undefined as T});
+            waiter.resolve(done);
         }
         this.clearWaiters();
     }
@@ -73,6 +84,7 @@ export class AsyncQueue<T> implements AsyncIterable<T> {
         }
         this.failed = true;
         this.failure = error;
+        this.clearAbortListener();
         for (let index = this.waiterHead; index < this.waiters.length; index += 1) {
             const waiter = this.waiters[index]!;
             waiter.reject(this.failure);
@@ -102,10 +114,7 @@ export class AsyncQueue<T> implements AsyncIterable<T> {
             return Promise.reject(this.failure);
         }
         if (this.closed) {
-            return Promise.resolve({done: true, value: undefined as T});
-        }
-        if (this.signal?.aborted) {
-            return Promise.reject(new CancelledError());
+            return resolvedDoneResult<T>();
         }
         return new Promise((resolve, reject) => {
             this.waiters.push({resolve, reject});
@@ -115,7 +124,7 @@ export class AsyncQueue<T> implements AsyncIterable<T> {
     /** Completes the queue from an async iterator return call. */
     public return(): Promise<IteratorResult<T>> {
         this.complete();
-        return Promise.resolve({done: true, value: undefined as T});
+        return resolvedDoneResult<T>();
     }
 
     /** Returns the next pending waiter without shifting the backing array. */
@@ -163,5 +172,14 @@ export class AsyncQueue<T> implements AsyncIterable<T> {
     private clearWaiters(): void {
         this.waiters.length = 0;
         this.waiterHead = 0;
+    }
+
+    /** Removes the abort listener once the queue no longer needs cancellation. */
+    private clearAbortListener(): void {
+        if (this.abortSignal && this.abortListener) {
+            this.abortSignal.removeEventListener("abort", this.abortListener);
+        }
+        this.abortSignal = undefined;
+        this.abortListener = undefined;
     }
 }

@@ -2,11 +2,11 @@
  * @packageDocumentation
  * Sink specifications and default browser-oriented sink implementations.
  */
-import type {Disposable} from "@/core/index.js";
-import type {Flux} from "@/publishers/flux.js";
-import type {Mono} from "@/publishers/mono.js";
-import type {PublisherInput} from "@/publishers/types.js";
-import {SignalType} from "@/signal/index.js";
+import type {Disposable} from "@/core/types.js";
+import type {Flux} from "@/publisher/flux.js";
+import type {Mono} from "@/publisher/mono.js";
+import type {PublisherInput} from "@/publisher/types.js";
+import {SignalType} from "@/signal/signal-type.js";
 
 /** Result of a sink emission attempt. */
 export enum EmitResult {

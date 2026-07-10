@@ -2,34 +2,7 @@
  * @packageDocumentation
  * Internal async iteration and cancellation utilities.
  */
-import {CancelledError} from "@/errors/index.js";
-
-/** Returns a promise that resolves after `ms` unless the abort signal fires. */
-export function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
-    if (signal?.aborted) {
-        return Promise.reject(new CancelledError());
-    }
-    return new Promise((resolve, reject) => {
-        const id = setTimeout(done, Math.max(0, ms));
-        const onAbort = () => {
-            clearTimeout(id);
-            signal?.removeEventListener("abort", onAbort);
-            reject(new CancelledError());
-        };
-
-        function done() {
-            signal?.removeEventListener("abort", onAbort);
-            resolve();
-        }
-
-        signal?.addEventListener("abort", onAbort, {once: true});
-    });
-}
-
-/** Returns a cancellation error when the signal is already aborted. */
-export function abortError(signal?: AbortSignal): CancelledError | undefined {
-    return signal?.aborted ? new CancelledError() : undefined;
-}
+import {CancelledError} from "@/errors/classes.js";
 
 /** Races a promise against an abort signal and rejects with cancellation on abort. */
 export function raceWithAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {

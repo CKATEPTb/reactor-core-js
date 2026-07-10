@@ -4,14 +4,22 @@
  */
 import type {ContextKey} from "@/context/types.js";
 
+/** Shared immutable empty context entries map. */
+const EMPTY_CONTEXT_ENTRIES: ReadonlyMap<ContextKey, unknown> = new Map();
+
 /** Read-only immutable context view. */
 export class ContextView {
     /** Stores immutable context entries by arbitrary user-provided keys. */
-    protected readonly entries: ReadonlyMap<ContextKey, unknown>;
+    protected entries: ReadonlyMap<ContextKey, unknown>;
 
-    /** Creates a read-only context view from entries. */
-    public constructor(entries?: Iterable<readonly [ContextKey, unknown]>) {
-        this.entries = new Map(entries);
+    /** Creates a read-only context view from entries, copying unless entries are trusted immutable data. */
+    public constructor(entries?: Iterable<readonly [ContextKey, unknown]>, trusted = false) {
+        this.entries =
+            entries === undefined
+                ? EMPTY_CONTEXT_ENTRIES
+                : trusted
+                    ? (entries as ReadonlyMap<ContextKey, unknown>)
+                    : new Map(entries);
     }
 
     /** Returns the value for `key` or throws when absent. */
