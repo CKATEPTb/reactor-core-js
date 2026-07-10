@@ -88,6 +88,101 @@ describe("Flux", () => {
     await expect(Flux.interval(1).take(3).toArray()).resolves.toEqual([0, 1, 2]);
   });
 
+  it("creates browser event sources and removes listeners on cancellation", async () => {
+    class CountingTarget extends EventTarget {
+      public added = 0;
+      public removed = 0;
+
+      public override addEventListener(
+        type: string,
+        callback: EventListenerOrEventListenerObject | null,
+        options?: AddEventListenerOptions | boolean
+      ): void {
+        this.added += 1;
+        super.addEventListener(type, callback, options);
+      }
+
+      public override removeEventListener(
+        type: string,
+        callback: EventListenerOrEventListenerObject | null,
+        options?: EventListenerOptions | boolean
+      ): void {
+        this.removed += 1;
+        super.removeEventListener(type, callback, options);
+      }
+    }
+
+    const target = new CountingTarget();
+    const seen: string[] = [];
+    let subscription: Subscription | undefined;
+
+    Flux.fromEvent<Event>(target, "ping").subscribe({
+      onSubscribe(nextSubscription) {
+        subscription = nextSubscription;
+        nextSubscription.request(1);
+      },
+      onNext(event) {
+        seen.push(event.type);
+        subscription?.cancel();
+      },
+      onError(error) {
+        throw error;
+      },
+      onComplete() {
+        // no-op
+      }
+    });
+
+    target.dispatchEvent(new Event("ping"));
+
+    await vi.waitFor(() => expect(seen).toEqual(["ping"]));
+    expect(target.added).toBe(1);
+    expect(target.removed).toBe(1);
+
+    target.dispatchEvent(new Event("ping"));
+    expect(seen).toEqual(["ping"]);
+  });
+
+  it("creates browser WebSocket message sources and closes on requested cancellation", async () => {
+    class FakeWebSocket extends EventTarget {
+      public binaryType: BinaryType = "blob";
+      public closeCount = 0;
+      public removed = 0;
+      public readyState = 1;
+
+      public close(): void {
+        this.closeCount += 1;
+        this.readyState = 3;
+        this.dispatchEvent(new Event("close"));
+      }
+
+      public override removeEventListener(
+        type: string,
+        callback: EventListenerOrEventListenerObject | null,
+        options?: EventListenerOptions | boolean
+      ): void {
+        this.removed += 1;
+        super.removeEventListener(type, callback, options);
+      }
+    }
+
+    const socket = new FakeWebSocket();
+    const message = new Event("message") as MessageEvent<string>;
+    Object.defineProperty(message, "data", {value: "hello"});
+
+    const values = Flux.fromWebSocket<string>(socket as unknown as WebSocket, {
+      binaryType: "arraybuffer",
+      closeOnCancel: true
+    }).map(event => event.data).take(1).toArray();
+
+    expect(socket.binaryType).toBe("arraybuffer");
+    socket.dispatchEvent(message);
+
+    await expect(values).resolves.toEqual(["hello"]);
+    expect(socket.closeCount).toBe(1);
+    expect(socket.removed).toBe(3);
+  });
+
   it("runs create cancellation callbacks", async () => {
     let cancelled = 0;
     let subscription: Subscription | undefined;

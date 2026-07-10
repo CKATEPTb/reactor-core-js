@@ -21,6 +21,7 @@ import {
 } from "@/internal/iterable.js";
 import {collectIterable, lastIterableValue} from "@/internal/iterable-terminal.js";
 import {mapIterable} from "@/internal/iterable-transform.js";
+import {eventSource, type WebSocketFluxOptions, webSocketSource} from "@/publisher/browser-sources.js";
 import type {Publisher} from "@/publisher/publisher.js";
 import {addCancelCallback, type CancelCallbacks, isSubscriber, runCancelCallbacks, scheduleDelay} from "@/publisher/helpers.js";
 import {IterableSubscription} from "@/subscription/iterable-subscription.js";
@@ -74,6 +75,57 @@ export class Flux<T> implements Publisher<T>, AsyncIterable<T> {
             return Flux.empty<T>();
         }
         return new Flux(() => values);
+    }
+
+    /** Creates a Flux from browser `Window` events and removes the listener on cancellation. */
+    public static fromEvent<K extends keyof WindowEventMap>(
+        target: Window,
+        type: K,
+        options?: boolean | AddEventListenerOptions
+    ): Flux<WindowEventMap[K]>;
+    /** Creates a Flux from browser `Document` events and removes the listener on cancellation. */
+    public static fromEvent<K extends keyof DocumentEventMap>(
+        target: Document,
+        type: K,
+        options?: boolean | AddEventListenerOptions
+    ): Flux<DocumentEventMap[K]>;
+    /** Creates a Flux from browser `HTMLElement` events and removes the listener on cancellation. */
+    public static fromEvent<K extends keyof HTMLElementEventMap>(
+        target: HTMLElement,
+        type: K,
+        options?: boolean | AddEventListenerOptions
+    ): Flux<HTMLElementEventMap[K]>;
+    /** Creates a Flux from any browser `EventTarget` and removes the listener on cancellation. */
+    public static fromEvent<TEvent extends Event = Event>(
+        target: EventTarget,
+        type: string,
+        options?: boolean | AddEventListenerOptions
+    ): Flux<TEvent>;
+    /** Creates a Flux from browser events and removes the listener on cancellation. */
+    public static fromEvent<TEvent extends Event = Event>(
+        target: EventTarget,
+        type: string,
+        options?: boolean | AddEventListenerOptions
+    ): Flux<TEvent> {
+        return new Flux(eventSource<TEvent>(target, type, options));
+    }
+
+    /** Creates a Flux from browser WebSocket message events. */
+    public static fromWebSocket<T = unknown>(
+        url: string | URL,
+        options?: string | string[] | WebSocketFluxOptions
+    ): Flux<MessageEvent<T>>;
+    /** Creates a Flux from browser WebSocket message events. */
+    public static fromWebSocket<T = unknown>(
+        socket: WebSocket,
+        options?: WebSocketFluxOptions
+    ): Flux<MessageEvent<T>>;
+    /** Creates a Flux from browser WebSocket message events and cleans listeners on cancellation. */
+    public static fromWebSocket<T = unknown>(
+        input: WebSocket | string | URL,
+        options?: string | string[] | WebSocketFluxOptions
+    ): Flux<MessageEvent<T>> {
+        return new Flux(webSocketSource<T>(input, options));
     }
 
     /** Adapts a publisher, iterable, async iterable or promise-like value to Flux. */
