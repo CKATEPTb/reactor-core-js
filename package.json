@@ -1,24 +1,9 @@
 {
   "name": "reactor-core-ts",
-  "version": "2.1.6",
-  "description": "A TypeScript implementation of Reactive Streams, inspired by Project Reactor. Provides Flux and Mono publishers with full backpressure support, a suite of composable operators, programmable Sinks, and pluggable Schedulers.",
-  "main": "./dist/index.js",
-  "module": "./dist/index.mjs",
-  "types": "./dist/index.d.ts",
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.mjs",
-      "require": "./dist/index.js"
-    }
-  },
-  "scripts": {
-    "build": "npm run test && tsup src/index.ts",
-    "start": "tsx src/start.ts",
-    "start:watch": "tsx watch src/start.ts",
-    "test": "jest --config jest.config.ts",
-    "test:watch": "jest --config jest.config.ts --watch"
-  },
+  "version": "3.2.1",
+  "description": "Browser-first TypeScript implementation inspired by Project Reactor Core.",
+  "license": "LGPL-3.0-only",
+  "author": "CKATEPTb",
   "repository": {
     "type": "git",
     "url": "https://github.com/CKATEPTb/reactor-core-ts.git"
@@ -32,21 +17,102 @@
     "spring",
     "java",
     "typescript",
-    "backpressure"
+    "backpressure",
+    "reactor",
+    "flux",
+    "mono",
+    "browser"
   ],
-  "author": "CKATEPTb",
-  "license": "LGPL-3.0-only",
-  "devDependencies": {
-    "@types/jest": "^29.5.14",
-    "@types/node": "^22.15.17",
-    "jest": "^29.7.0",
-    "ts-jest": "^29.3.2",
-    "ts-node": "^10.9.2",
-    "tsup": "^8.4.0",
-    "tsx": "^4.19.4",
-    "typescript": "^5.8.3"
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "browser": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "browser": "./dist/index.js",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./flux": {
+      "types": "./dist/publisher/flux-entrypoint.d.ts",
+      "browser": "./dist/publisher/flux-entrypoint.js",
+      "import": "./dist/publisher/flux-entrypoint.js",
+      "default": "./dist/publisher/flux-entrypoint.js"
+    },
+    "./mono": {
+      "types": "./dist/publisher/mono-entrypoint.d.ts",
+      "browser": "./dist/publisher/mono-entrypoint.js",
+      "import": "./dist/publisher/mono-entrypoint.js",
+      "default": "./dist/publisher/mono-entrypoint.js"
+    },
+    "./sinks": {
+      "types": "./dist/sinks/index.d.ts",
+      "browser": "./dist/sinks/index.js",
+      "import": "./dist/sinks/index.js",
+      "default": "./dist/sinks/index.js"
+    },
+    "./schedulers": {
+      "types": "./dist/schedulers/index.d.ts",
+      "browser": "./dist/schedulers/index.js",
+      "import": "./dist/schedulers/index.js",
+      "default": "./dist/schedulers/index.js"
+    },
+    "./reactive-streams": {
+      "types": "./dist/subscription/reactive-streams.d.ts",
+      "browser": "./dist/subscription/reactive-streams.js",
+      "import": "./dist/subscription/reactive-streams.js",
+      "default": "./dist/subscription/reactive-streams.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "typesVersions": {
+    "*": {
+      "flux": [
+        "dist/publisher/flux-entrypoint.d.ts"
+      ],
+      "mono": [
+        "dist/publisher/mono-entrypoint.d.ts"
+      ],
+      "schedulers": [
+        "dist/schedulers/index.d.ts"
+      ],
+      "sinks": [
+        "dist/sinks/index.d.ts"
+      ],
+      "reactive-streams": [
+        "dist/subscription/reactive-streams.d.ts"
+      ]
+    }
   },
   "files": [
-    "dist"
-  ]
+    "dist",
+    "README.md"
+  ],
+  "sideEffects": [
+    "./src/publisher/flux-entrypoint.ts",
+    "./src/publisher/mono-entrypoint.ts",
+    "./src/publisher/operators/register.ts",
+    "./src/publisher/operators/**/*.ts",
+    "./dist/index.js",
+    "./dist/publisher/flux-entrypoint.js",
+    "./dist/publisher/mono-entrypoint.js",
+    "./dist/publisher/operators/register.js",
+    "./dist/publisher/operators/**/*.js"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "node scripts/clean-dist.mjs && vite build && tsc -p tsconfig.build.json --emitDeclarationOnly && node scripts/rewrite-dist-aliases.mjs && node scripts/check-browser-package.mjs",
+    "test": "tsc -p tsconfig.json && npm run build && vitest run && node scripts/java-oracle-matrix.mjs && node scripts/check-api-parity.mjs --fail && npm pack --dry-run --json",
+    "generate-fixtures": "npm run build && node scripts/java-oracle-matrix.mjs --refresh"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "typescript": "^7.0.2",
+    "vite": "^8.1.4",
+    "vitest": "^4.1.10"
+  }
 }
