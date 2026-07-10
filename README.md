@@ -214,6 +214,8 @@ table can stay usable as a reference.
 | `Flux.fromStream(stream)` | Emit an iterable or iterable supplier. | `Flux.fromStream(() => new Set([1, 2]))` |
 | `Flux.fromIterable(values)` | Emit any iterable. | `Flux.fromIterable(new Map().keys())` |
 | `Flux.from(input)` | Adapt publisher, iterable, async iterable or promise. | `Flux.from(fetch("/api").then(r => r.json()))` |
+| `Flux.fromEvent(target, type, options?)` | Listen to a browser `EventTarget` and remove the listener on cancellation. | `Flux.fromEvent(button, "click").take(1)` |
+| `Flux.fromWebSocket(socketOrUrl, options?)` | Listen to browser WebSocket messages and clean up listeners on cancellation. | `Flux.fromWebSocket<string>("wss://example.com/socket")` |
 | `Flux.empty()` | Complete without values. | `Flux.empty<number>()` |
 | `Flux.never()` | Never emit and never complete. | `Flux.never().timeout(100, Flux.just("fallback"))` |
 | `Flux.error(error)` | Fail when subscribed. | `Flux.error(new Error("boom"))` |
@@ -243,6 +245,55 @@ table can stay usable as a reference.
 | `Flux.switchOnNext(sources)` | Switch to the latest inner publisher. | `Flux.switchOnNext(Flux.just(Flux.just(1)))` |
 | `Flux.using(resource, source, cleanup)` | Use and clean up a synchronous resource. | `Flux.using(open, r => Flux.just(r.id), close)` |
 | `Flux.usingWhen(resource, source, cleanup...)` | Use and clean up an async resource. | `Flux.usingWhen(connect(), c => queryMany(c), closeAsync)` |
+
+### Browser Source Examples
+
+`Flux.fromEvent` is the small, direct bridge for DOM events. It adds one event
+listener per subscription and removes it when the subscription is cancelled, for
+example by `take(1)`, `timeout`, or manual cancellation.
+
+```ts
+const button = document.querySelector<HTMLButtonElement>("#save")!;
+
+Flux.fromEvent(button, "click")
+  .map(event => ({ x: event.clientX, y: event.clientY }))
+  .take(1)
+  .subscribe(point => console.log("clicked", point));
+```
+
+Use the generic overload when the target is only known as a plain
+`EventTarget`.
+
+```ts
+Flux.fromEvent<InputEvent>(searchInput, "input")
+  .map(event => (event.currentTarget as HTMLInputElement).value)
+  .filter(value => value.length > 1)
+  .subscribe(value => console.log("search", value));
+```
+
+`Flux.fromWebSocket` turns browser `message` events into stream values. Passing a
+URL makes the Flux own the socket and close it on cancellation. Passing an
+existing socket leaves it open unless `closeOnCancel: true` is set.
+
+```ts
+Flux.fromWebSocket<string>("wss://example.com/feed")
+  .map(event => JSON.parse(event.data) as { type: string })
+  .filter(message => message.type === "price")
+  .take(10)
+  .subscribe(message => console.log(message));
+```
+
+```ts
+const socket = new WebSocket("wss://example.com/feed");
+
+Flux.fromWebSocket<ArrayBuffer>(socket, {
+  binaryType: "arraybuffer",
+  closeOnCancel: true
+})
+  .map(event => event.data.byteLength)
+  .timeout(5000)
+  .subscribe(size => console.log("bytes", size));
+```
 
 ## Mono Methods
 
@@ -962,9 +1013,14 @@ Flux.interval(16, Schedulers.animationFrame())
 | `npm run test:matrix` | Run method matrix coverage. |
 | `npm run test:operators` | Run operator behavior tests. |
 | `npm run test:sinks` | Run sink parity tests. |
-| `npm run test:java-oracle` | Compare expected Java Reactor oracle behavior. |
-| `npm run api:parity:strict` | Verify API parity expectations strictly. |
+| `npm run test:java-oracle` | Compare TypeScript behavior with the committed Reactor oracle fixture. |
+| `npm run api:parity:strict` | Compare the public API with the committed Reactor API fixture. |
+| `npm run fixtures:reactor` | Manually download Maven Reactor artifacts and regenerate the committed fixture. |
 | `npm run ci` | Run the full validation pipeline. |
+
+Tests read only the committed fixture in `test/fixtures`. They never expect a
+local Project Reactor checkout next to this repository. The `fixtures:reactor`
+script is manual and refreshes that fixture from Maven artifacts.
 
 ## Practical Rules
 
