@@ -1,25 +1,33 @@
 {
   "name": "reactor-core-ts",
-  "version": "0.1.0",
+  "version": "3.1.0",
   "description": "Browser-first TypeScript implementation inspired by Project Reactor Core.",
+  "license": "LGPL-3.0-only",
+  "author": "CKATEPTb",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/CKATEPTb/reactor-core-ts.git"
+  },
+  "keywords": [
+    "reactive-streams",
+    "reactor-core",
+    "reactive",
+    "rxjs",
+    "rsocket",
+    "spring",
+    "java",
+    "typescript",
+    "backpressure",
+    "reactor",
+    "flux",
+    "mono",
+    "browser"
+  ],
   "type": "module",
+  "main": "./dist/index.js",
   "module": "./dist/index.js",
   "browser": "./dist/index.js",
-  "sideEffects": [
-    "./src/publisher/flux-entrypoint.ts",
-    "./src/publisher/mono-entrypoint.ts",
-    "./src/publisher/operators/register.ts",
-    "./src/publisher/operators/**/*.ts",
-    "./dist/index.js",
-    "./dist/publisher/flux-entrypoint.js",
-    "./dist/publisher/mono-entrypoint.js",
-    "./dist/publisher/operators/register.js",
-    "./dist/publisher/operators/**/*.js"
-  ],
-  "files": [
-    "dist",
-    "README.md"
-  ],
+  "types": "./dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -78,23 +86,28 @@
       ]
     }
   },
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
-  "scripts": {
-    "generate-fixtures": "npm run build && node scripts/java-oracle-matrix.mjs --refresh",
-    "test": "tsc -p tsconfig.json && npm run build && vitest run && node scripts/java-oracle-matrix.mjs && node scripts/check-api-parity.mjs --fail && npm pack --dry-run --json",
-    "build": "node scripts/clean-dist.mjs && vite build && tsc -p tsconfig.build.json --emitDeclarationOnly && node scripts/rewrite-dist-aliases.mjs && node scripts/check-browser-package.mjs"
-  },
-  "keywords": [
-    "reactive-streams",
-    "reactor",
-    "flux",
-    "mono",
-    "browser"
+  "files": [
+    "dist",
+    "README.md"
   ],
-  "license": "Apache-2.0",
+  "sideEffects": [
+    "./src/publisher/flux-entrypoint.ts",
+    "./src/publisher/mono-entrypoint.ts",
+    "./src/publisher/operators/register.ts",
+    "./src/publisher/operators/**/*.ts",
+    "./dist/index.js",
+    "./dist/publisher/flux-entrypoint.js",
+    "./dist/publisher/mono-entrypoint.js",
+    "./dist/publisher/operators/register.js",
+    "./dist/publisher/operators/**/*.js"
+  ],
   "publishConfig": {
     "access": "public"
+  },
+  "scripts": {
+    "build": "node scripts/clean-dist.mjs && vite build && tsc -p tsconfig.build.json --emitDeclarationOnly && node scripts/rewrite-dist-aliases.mjs && node scripts/check-browser-package.mjs",
+    "test": "tsc -p tsconfig.json && npm run build && vitest run && node scripts/java-oracle-matrix.mjs && node scripts/check-api-parity.mjs --fail && npm pack --dry-run --json",
+    "generate-fixtures": "npm run build && node scripts/java-oracle-matrix.mjs --refresh"
   },
   "devDependencies": {
     "@types/node": "^26.1.1",
