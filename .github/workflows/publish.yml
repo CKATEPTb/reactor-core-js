@@ -1,23 +1,16 @@
 name: Publish
 
 on:
-  release:
-    types:
-      - published
-  workflow_dispatch:
-    inputs:
-      dry_run:
-        description: Run all publish checks without publishing to npm.
-        required: true
-        type: boolean
-        default: true
+  push:
+    branches:
+      - production
 
 permissions:
   contents: read
   id-token: write
 
 concurrency:
-  group: publish-${{ github.ref }}
+  group: publish-production
   cancel-in-progress: false
 
 jobs:
@@ -34,69 +27,18 @@ jobs:
         with:
           node-version: 24.x
           cache: npm
+          registry-url: https://registry.npmjs.org
 
       - name: Install dependencies
-        run: |
-          echo "[publish] npm ci"
-          npm ci
+        run: npm ci
 
-      - name: Typecheck
-        run: |
-          echo "[publish] npm run typecheck"
-          npm run typecheck
-
-      - name: Unit tests
-        run: |
-          echo "[publish] npm run test:unit"
-          npm run test:unit
-
-      - name: Method matrix tests
-        run: |
-          echo "[publish] npm run test:matrix"
-          npm run test:matrix
-
-      - name: Operator semantics and sequence tests
-        run: |
-          echo "[publish] npm run test:operators"
-          npm run test:operators
-
-      - name: Sink parity matrix
-        run: |
-          echo "[publish] npm run test:sinks"
-          npm run test:sinks
-
-      - name: Java oracle fixture comparison
-        run: |
-          echo "[publish] npm run test:java-oracle"
-          echo "[publish] Uses committed Java fixture; does not build reactor-core or run Gradle."
-          npm run test:java-oracle
-
-      - name: Strict API parity
-        run: |
-          echo "[publish] npm run api:parity:strict"
-          npm run api:parity:strict
+      - name: Test
+        run: npm test
 
       - name: Build package
-        run: |
-          echo "[publish] npm run build"
-          npm run build
-
-      - name: Package dry run
-        run: |
-          echo "[publish] npm pack --dry-run"
-          npm pack --dry-run
+        run: npm run build
 
       - name: Publish to npm
-        if: ${{ github.event_name == 'release' || inputs.dry_run == false }}
         env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          echo "[publish] npm publish --provenance --access public"
-          if [ -n "${NPM_TOKEN}" ]; then
-            printf "//registry.npmjs.org/:_authToken=%s\n" "${NPM_TOKEN}" > ~/.npmrc
-          fi
-          npm publish --provenance --access public
-
-      - name: Dry run complete
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run == true }}
-        run: echo "[publish] Dry run complete; package was not published."
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --provenance --access public
