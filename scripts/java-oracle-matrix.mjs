@@ -1,9 +1,9 @@
 /**
  * Runs the compact Reactor oracle against the TypeScript build.
  *
- * CI uses the committed fixture so every run does not need a JVM, Gradle or a
- * local reactor-core checkout. Use `--java` to compare against Maven artifacts
- * or `--refresh` to regenerate the fixture from the Maven oracle.
+ * CI uses the committed fixture so every run does not need a JVM, Gradle,
+ * Maven downloads or a local reactor-core checkout. Use `--refresh` manually to
+ * regenerate the fixture from Maven Reactor artifacts.
  */
 import { execFileSync } from "node:child_process";
 import { createWriteStream, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
@@ -33,13 +33,14 @@ const runJava = refreshFixture || process.argv.includes("--java");
 try {
   log(`mode=${refreshFixture ? "refresh" : runJava ? "java" : "fixture"}`);
   log("load expected result");
-  const expected = runJava ? await runJavaOracle() : readFixture();
+  const expectedFixture = runJava ? await runMavenFixture() : readFixture();
   if (refreshFixture) {
     log("write refreshed fixture");
-    writeFixture(expected);
+    writeFixture(expectedFixture);
   }
 
   log("run TypeScript oracle");
+  const expected = oracleScenarios(expectedFixture);
   const actual = await runTypeScriptOracle();
   log("compare oracle output");
   if (JSON.stringify(expected) !== JSON.stringify(actual)) {
@@ -64,6 +65,13 @@ function readFixture() {
 /** Writes a deterministic JSON fixture. */
 function writeFixture(value) {
   writeFileSync(fixturePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+}
+
+/** Returns only behavior scenarios from a fixture that may also contain API metadata. */
+function oracleScenarios(fixture) {
+  const { api, ...scenarios } = fixture;
+  void api;
+  return scenarios;
 }
 
 /** Returns human-readable differences between two JSON-compatible values. */
@@ -123,10 +131,104 @@ async function runJavaOracle() {
   return JSON.parse(output);
 }
 
+/** Builds the complete fixture from Maven artifacts. */
+async function runMavenFixture() {
+  return {
+    ...(await runJavaOracle()),
+    api: await runJavaApiFixture()
+  };
+}
+
+/** Extracts public API method names from the Maven Reactor sources jar. */
+async function runJavaApiFixture() {
+  log(`download reactor-core ${reactorCoreVersion} sources`);
+  const sourcesJar = await downloadMavenArtifact("io.projectreactor", "reactor-core", reactorCoreVersion, "sources");
+  const sourceRoot = join(workDir, "sources");
+  mkdirSync(sourceRoot, { recursive: true });
+  const entries = [
+    "reactor/core/publisher/Flux.java",
+    "reactor/core/publisher/Mono.java",
+    "reactor/core/publisher/Sinks.java"
+  ];
+  execFileSync("jar", ["xf", sourcesJar, ...entries], { cwd: sourceRoot, stdio: "inherit" });
+  const fluxSource = readFileSync(join(sourceRoot, entries[0]), "utf8");
+  const monoSource = readFileSync(join(sourceRoot, entries[1]), "utf8");
+  const sinksSource = readFileSync(join(sourceRoot, entries[2]), "utf8");
+  return {
+    Flux: classApiFixture(fluxSource),
+    Mono: classApiFixture(monoSource),
+    Sinks: sinksApiFixture(sinksSource)
+  };
+}
+
+/** Converts Java class source to sorted public static and instance method names. */
+function classApiFixture(source) {
+  const api = extractTopLevelClassMethods(source);
+  return {
+    static: [...api.static].sort(),
+    instance: [...api.instance].sort()
+  };
+}
+
+/** Converts Java Sinks source to sorted public static and nested method names. */
+function sinksApiFixture(source) {
+  return {
+    static: [...extractTopLevelClassMethods(source).static].sort(),
+    nested: [...extractNestedInterfaceMethods(source)].sort()
+  };
+}
+
+/** Extracts public methods declared by the top-level Java class or interface. */
+function extractTopLevelClassMethods(source) {
+  source = stripBlockComments(source);
+  const classMatch = source.match(/public\s+(?:abstract\s+|final\s+)?(?:class|interface)\s+\w+/);
+  if (!classMatch) {
+    return { static: new Set(), instance: new Set() };
+  }
+  const classOpen = source.indexOf("{", classMatch.index);
+  const body = source.slice(classOpen + 1).replace(/\s+/g, " ");
+  const staticMethods = new Set();
+  const instanceMethods = new Set();
+  const methodPattern = /\bpublic\s+(static|final|abstract)\s+([^;{}=]*?)\s+([a-zA-Z_$][\w$]*)\s*\(/g;
+  for (const match of body.matchAll(methodPattern)) {
+    const kind = match[1];
+    const name = match[3];
+    if (["Flux", "Mono", "Sinks"].includes(name)) {
+      continue;
+    }
+    if (kind === "static") {
+      staticMethods.add(name);
+    } else {
+      instanceMethods.add(name);
+    }
+  }
+  return { static: staticMethods, instance: instanceMethods };
+}
+
+/** Extracts public-like nested Sinks interface methods from Java source. */
+function extractNestedInterfaceMethods(source) {
+  source = stripBlockComments(source);
+  const methods = new Set();
+  const normalized = source.replace(/\s+/g, " ");
+  const methodPattern = /\b(?:[\w$<>,.?&\s@]+)\s+([a-zA-Z_$][\w$]*)\s*\([^;{}]*\)\s*;/g;
+  for (const match of normalized.matchAll(methodPattern)) {
+    const name = match[1];
+    if (!["for", "if", "while", "switch"].includes(name) && /^[a-z]/.test(name)) {
+      methods.add(name);
+    }
+  }
+  return methods;
+}
+
+/** Removes Java block comments before method extraction. */
+function stripBlockComments(source) {
+  return source.replace(/\/\*[\s\S]*?\*\//g, "");
+}
+
 /** Downloads one Maven artifact into the local oracle cache. */
-async function downloadMavenArtifact(groupId, artifactId, version) {
+async function downloadMavenArtifact(groupId, artifactId, version, classifier = "") {
   const groupPath = groupId.replaceAll(".", "/");
-  const fileName = `${artifactId}-${version}.jar`;
+  const fileName = `${artifactId}-${version}${classifier ? `-${classifier}` : ""}.jar`;
   const target = join(cacheDir, groupPath, artifactId, version, fileName);
   if (existsSync(target)) {
     log(`use cached ${fileName}`);

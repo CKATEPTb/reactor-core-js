@@ -4,12 +4,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const fail = process.argv.includes("--fail");
-
-const reactorFiles = {
-  Flux: path.join(root, "reactor-core/reactor-core/src/main/java/reactor/core/publisher/Flux.java"),
-  Mono: path.join(root, "reactor-core/reactor-core/src/main/java/reactor/core/publisher/Mono.java"),
-  Sinks: path.join(root, "reactor-core/reactor-core/src/main/java/reactor/core/publisher/Sinks.java")
-};
+const fixturePath = path.join(root, "test", "fixtures", "reactor-oracle-matrix.json");
 
 const distIndex = path.join(root, "dist/index.js");
 if (!fs.existsSync(distIndex)) {
@@ -18,15 +13,18 @@ if (!fs.existsSync(distIndex)) {
 }
 
 const runtime = await import(pathToFileURL(distIndex).href);
+const fixture = JSON.parse(fs.readFileSync(fixturePath, "utf8"));
+const expectedApi = fixture.api;
 
-const fluxSource = fs.readFileSync(reactorFiles.Flux, "utf8");
-const monoSource = fs.readFileSync(reactorFiles.Mono, "utf8");
-const sinksSource = fs.readFileSync(reactorFiles.Sinks, "utf8");
+if (!expectedApi?.Flux || !expectedApi?.Mono || !expectedApi?.Sinks) {
+  console.error(`API fixture is missing in ${fixturePath}. Run npm run fixtures:reactor to refresh test fixtures.`);
+  process.exit(2);
+}
 
 const report = {
-  Flux: compareClassApi(fluxSource, runtime.Flux),
-  Mono: compareClassApi(monoSource, runtime.Mono),
-  Sinks: compareSinksApi(sinksSource, runtime.Sinks)
+  Flux: compareClassApi(expectedApi.Flux, runtime.Flux),
+  Mono: compareClassApi(expectedApi.Mono, runtime.Mono),
+  Sinks: compareSinksApi(expectedApi.Sinks, runtime.Sinks)
 };
 
 console.log(JSON.stringify(report, null, 2));
@@ -43,26 +41,23 @@ if (fail && missing > 0) {
   process.exit(1);
 }
 
-function compareClassApi(source, ctor) {
-  const javaApi = extractTopLevelClassMethods(source);
+function compareClassApi(expected, ctor) {
   const tsStatic = new Set(Object.getOwnPropertyNames(ctor).filter(name => !["length", "name", "prototype"].includes(name)));
   const tsInstance = new Set(Object.getOwnPropertyNames(ctor.prototype).filter(name => name !== "constructor"));
 
   return {
-    static: summarize(javaApi.static, tsStatic),
-    instance: summarize(javaApi.instance, tsInstance)
+    static: summarize(new Set(expected.static), tsStatic),
+    instance: summarize(new Set(expected.instance), tsInstance)
   };
 }
 
-function compareSinksApi(source, sinks) {
-  const staticJava = extractTopLevelClassMethods(source).static;
-  const nestedJava = extractNestedInterfaceMethods(source);
+function compareSinksApi(expected, sinks) {
   const staticTs = new Set(Object.keys(sinks));
   const nestedTs = collectSinkRuntimeMethods(sinks);
 
   return {
-    static: summarize(staticJava, staticTs),
-    nested: summarize(nestedJava, nestedTs)
+    static: summarize(new Set(expected.static), staticTs),
+    nested: summarize(new Set(expected.nested), nestedTs)
   };
 }
 
@@ -75,47 +70,6 @@ function summarize(expected, actual) {
     missing,
     extra
   };
-}
-
-function extractTopLevelClassMethods(source) {
-  source = stripBlockComments(source);
-  const classMatch = source.match(/public\s+(?:abstract\s+|final\s+)?(?:class|interface)\s+\w+/);
-  if (!classMatch) {
-    return { static: new Set(), instance: new Set() };
-  }
-  const classOpen = source.indexOf("{", classMatch.index);
-  const body = source.slice(classOpen + 1).replace(/\s+/g, " ");
-  const staticMethods = new Set();
-  const instanceMethods = new Set();
-  const methodPattern = /\bpublic\s+(static|final|abstract)\s+([^;{}=]*?)\s+([a-zA-Z_$][\w$]*)\s*\(/g;
-  for (const match of body.matchAll(methodPattern)) {
-    const kind = match[1];
-    const name = match[3];
-    if (["Flux", "Mono", "Sinks"].includes(name)) {
-      continue;
-    }
-    if (kind === "static") {
-      staticMethods.add(name);
-    } else {
-      instanceMethods.add(name);
-    }
-  }
-
-  return { static: staticMethods, instance: instanceMethods };
-}
-
-function extractNestedInterfaceMethods(source) {
-  source = stripBlockComments(source);
-  const methods = new Set();
-  const normalized = source.replace(/\s+/g, " ");
-  const methodPattern = /\b(?:[\w$<>,.?&\s@]+)\s+([a-zA-Z_$][\w$]*)\s*\([^;{}]*\)\s*;/g;
-  for (const match of normalized.matchAll(methodPattern)) {
-    const name = match[1];
-    if (!["for", "if", "while", "switch"].includes(name) && /^[a-z]/.test(name)) {
-      methods.add(name);
-    }
-  }
-  return methods;
 }
 
 function collectSinkRuntimeMethods(sinks) {
@@ -146,16 +100,4 @@ function collectSinkRuntimeMethods(sinks) {
     }
   }
   return methods;
-}
-
-function stripLineComment(line) {
-  return line.replace(/\/\/.*$/, "");
-}
-
-function stripBlockComments(source) {
-  return source.replace(/\/\*[\s\S]*?\*\//g, "");
-}
-
-function count(value, char) {
-  return [...value].filter(next => next === char).length;
 }

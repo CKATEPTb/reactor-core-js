@@ -13,11 +13,16 @@ type MonoCase = {
   name: string;
   apply(source: Mono<unknown>): unknown;
 };
+type MethodFixture = {
+  readonly instance: readonly string[];
+  readonly static: readonly string[];
+};
 
 const matrixLimit = Number(process.env.REACTOR_MATRIX_LIMIT ?? "0");
 const maxPairsPerSection = matrixLimit > 0 ? matrixLimit : Number.POSITIVE_INFINITY;
-const javaFlux = javaMethods("Flux");
-const javaMono = javaMethods("Mono");
+const finiteProjectionTimeoutMs = 1_500;
+const fixtureFlux = fixtureMethods("Flux");
+const fixtureMono = fixtureMethods("Mono");
 
 describe("Project Reactor method matrix", () => {
   beforeAll(() => {
@@ -180,14 +185,14 @@ describe("Project Reactor method matrix", () => {
     });
   });
 
-  it("has a matrix case for every Java Flux method", () => {
-    expect(missing(javaFlux.static, new Set(fluxStaticCases.map(testCase => testCase.name)))).toEqual([]);
-    expect(missing(javaFlux.instance, new Set(fluxCases.map(testCase => testCase.name)))).toEqual([]);
+  it("has a matrix case for every fixture Flux method", () => {
+    expect(missing(new Set(fixtureFlux.static), new Set(fluxStaticCases.map(testCase => testCase.name)))).toEqual([]);
+    expect(missing(new Set(fixtureFlux.instance), new Set(fluxCases.map(testCase => testCase.name)))).toEqual([]);
   });
 
-  it("has a matrix case for every Java Mono method", () => {
-    expect(missing(javaMono.static, new Set(monoStaticCases.map(testCase => testCase.name)))).toEqual([]);
-    expect(missing(javaMono.instance, new Set(monoCases.map(testCase => testCase.name)))).toEqual([]);
+  it("has a matrix case for every fixture Mono method", () => {
+    expect(missing(new Set(fixtureMono.static), new Set(monoStaticCases.map(testCase => testCase.name)))).toEqual([]);
+    expect(missing(new Set(fixtureMono.instance), new Set(monoCases.map(testCase => testCase.name)))).toEqual([]);
   });
 
   it("executes every Flux method as a standalone finite projection", async () => {
@@ -695,7 +700,7 @@ async function runPairMatrix<A extends { name: string }, B extends { name: strin
 
 async function expectFinite(label: string, publisher: Flux<unknown>): Promise<void> {
   try {
-    const values = await withTimeout(safeFlux(publisher).take(4).toArray(), 500);
+    const values = await withTimeout(safeFlux(publisher).take(4).toArray(), finiteProjectionTimeoutMs);
     expect(Array.isArray(values), label).toBe(true);
   } catch (error) {
     throw new Error(`${label} failed: ${String(error)}`);
@@ -924,52 +929,37 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   });
 }
 
-function javaMethods(className: "Flux" | "Mono"): { static: Set<string>; instance: Set<string> } {
-  const file = path.join(
-    process.cwd(),
-    "reactor-core",
-    "reactor-core",
-    "src",
-    "main",
-    "java",
-    "reactor",
-    "core",
-    "publisher",
-    `${className}.java`
-  );
-  const source = fs.readFileSync(file, "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
-  const classMatch = source.match(/public\s+(?:abstract\s+|final\s+)?(?:class|interface)\s+\w+/);
-  if (!classMatch) {
-    throw new Error(`Cannot find ${className} declaration`);
-  }
-  const classOpen = source.indexOf("{", classMatch.index);
-  const body = source.slice(classOpen + 1).replace(/\s+/g, " ");
-  const staticMethods = new Set<string>();
-  const instanceMethods = new Set<string>();
-  const methodPattern = /\bpublic\s+(static|final|abstract)\s+([^;{}=]*?)\s+([a-zA-Z_$][\w$]*)\s*\(/g;
-  for (const match of body.matchAll(methodPattern)) {
-    const kind = match[1]!;
-    const name = match[3]!;
-    if (name === "Flux" || name === "Mono") {
-      continue;
-    }
-    if (kind === "static") {
-      staticMethods.add(name);
-    } else {
-      instanceMethods.add(name);
-    }
-  }
-  return { static: staticMethods, instance: instanceMethods };
+function javaOracleTraces(): Record<string, unknown> {
+  return reactorFixture()["method-matrix"].traces;
 }
 
-function javaOracleTraces(): Record<string, unknown> {
+function fixtureMethods(className: "Flux" | "Mono"): MethodFixture {
+  const api = reactorFixture().api?.[className];
+  if (!api) {
+    throw new Error(`Missing ${className} API fixture. Run npm run fixtures:reactor to refresh test fixtures.`);
+  }
+  return api;
+}
+
+function reactorFixture(): {
+  readonly api?: {
+    readonly Flux?: MethodFixture;
+    readonly Mono?: MethodFixture;
+  };
+  readonly "method-matrix": {
+    readonly traces: Record<string, unknown>;
+  };
+} {
   const file = path.join(process.cwd(), "test", "fixtures", "reactor-oracle-matrix.json");
-  const fixture = JSON.parse(fs.readFileSync(file, "utf8")) as {
-    "method-matrix": {
-      traces: Record<string, unknown>;
+  return JSON.parse(fs.readFileSync(file, "utf8")) as {
+    readonly api?: {
+      readonly Flux?: MethodFixture;
+      readonly Mono?: MethodFixture;
+    };
+    readonly "method-matrix": {
+      readonly traces: Record<string, unknown>;
     };
   };
-  return fixture["method-matrix"].traces;
 }
 
 function missing(expected: Set<string>, actual: Set<string>): string[] {
