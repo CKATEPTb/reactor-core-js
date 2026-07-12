@@ -3,6 +3,7 @@
  * Flux, Mono and operator implementation modules.
  */
 import {BooleanDisposable} from "@/core/boolean-disposable.js";
+import {addCap} from "@/core/demand.js";
 import type {Disposable} from "@/core/types.js";
 import {Context} from "@/context/context.js";
 import type {ContextView} from "@/context/context-view.js";
@@ -134,14 +135,14 @@ export class Flux<T> implements Publisher<T>, AsyncIterable<T> {
         if (input instanceof Flux) {
             return input;
         }
+        if (typeof (input as Publisher<T>).subscribe === "function") {
+            return fromPublisher(input as Publisher<T>);
+        }
         if (isAsyncIterable<T>(input)) {
             return new Flux(() => input);
         }
         if (isIterable<T>(input)) {
             return Flux.fromIterable(input);
-        }
-        if (typeof (input as Publisher<T>).subscribe === "function") {
-            return fromPublisher(input as Publisher<T>);
         }
         if (typeof (input as PromiseLike<T>).then === "function") {
             return new Flux(async function* (signal) {
@@ -806,31 +807,117 @@ function throwUnhandledSubscriberError(error: unknown): never {
 
 /** Adapts a Reactive Streams publisher to the Flux async-iteration model. */
 function fromPublisher<T>(publisher: Publisher<T>): Flux<T> {
-    return new Flux((signal, context) => {
-        const queue = new AsyncQueue<T>(signal);
-        let subscription: Subscription | undefined;
-        publisher.subscribe({
-            /** Captures upstream subscription and requests unbounded demand. */
-            onSubscribe(nextSubscription) {
-                subscription = nextSubscription;
-                nextSubscription.request(Number.POSITIVE_INFINITY);
-            },
-            /** Pushes upstream values into the bridge queue. */
-            onNext(value) {
-                queue.push(value);
-            },
-            /** Fails the bridge queue with the upstream error. */
-            onError(error) {
-                queue.error(error);
-            },
-            /** Completes the bridge queue when upstream completes. */
-            onComplete() {
+    return new PublisherFlux(publisher);
+}
+
+/** Flux adapter that keeps Reactive Streams subscriptions on their native demand path. */
+class PublisherFlux<T> extends Flux<T> {
+    /** Creates a direct Flux adapter for a Reactive Streams publisher. */
+    public constructor(private readonly publisher: Publisher<T>) {
+        super(signal => publisherAsyncIterable(publisher, signal));
+    }
+
+    /** Subscribes directly so request amounts are not converted to iterator pulls. */
+    protected override subscribeActual(subscriber: Subscriber<T>): void {
+        this.publisher.subscribe(subscriber);
+    }
+}
+
+/** Adapts a publisher to pull-based async iteration without requesting it unboundedly. */
+function publisherAsyncIterable<T>(publisher: Publisher<T>, signal: AbortSignal): AsyncIterable<T> {
+    return {
+        /** Creates one pull-based iterator and its dedicated publisher subscription. */
+        [Symbol.asyncIterator]() {
+            const queue = new AsyncQueue<T>();
+            let subscription: Subscription | undefined;
+            let pendingDemand = 0;
+            let terminated = signal.aborted;
+
+            const cleanup = () => signal.removeEventListener("abort", cancel);
+            const cancel = () => {
+                if (terminated) {
+                    return;
+                }
+                terminated = true;
+                cleanup();
+                subscription?.cancel();
+                void queue.return();
+            };
+
+            if (terminated) {
                 queue.complete();
+            } else {
+                signal.addEventListener("abort", cancel, {once: true});
+                try {
+                    publisher.subscribe({
+                        /** Stores the upstream and drains any pulls made before onSubscribe. */
+                        onSubscribe(nextSubscription) {
+                            if (subscription || terminated) {
+                                nextSubscription.cancel();
+                                return;
+                            }
+                            subscription = nextSubscription;
+                            if (pendingDemand > 0) {
+                                const request = pendingDemand;
+                                pendingDemand = 0;
+                                nextSubscription.request(request);
+                            }
+                        },
+                        /** Queues one publisher value for an async iterator pull. */
+                        onNext(value) {
+                            queue.push(value);
+                        },
+                        /** Propagates the terminal publisher error to the iterator. */
+                        onError(error) {
+                            if (terminated) {
+                                return;
+                            }
+                            terminated = true;
+                            cleanup();
+                            queue.error(error);
+                        },
+                        /** Completes the iterator when the publisher completes. */
+                        onComplete() {
+                            if (terminated) {
+                                return;
+                            }
+                            terminated = true;
+                            cleanup();
+                            queue.complete();
+                        }
+                    });
+                } catch (error) {
+                    terminated = true;
+                    cleanup();
+                    queue.error(error);
+                }
             }
-        });
-        signal.addEventListener("abort", () => subscription?.cancel(), {once: true});
-        return queue;
-    });
+
+            return {
+                /** Requests exactly one upstream item for one iterator pull. */
+                next() {
+                    if (!terminated) {
+                        if (subscription) {
+                            subscription.request(1);
+                        } else {
+                            pendingDemand = addCap(pendingDemand, 1);
+                        }
+                    }
+                    return queue.next();
+                },
+                /** Cancels upstream when iteration stops early. */
+                return() {
+                    cancel();
+                    return queue.return();
+                },
+                /** Cancels upstream and rejects the iterator with the supplied error. */
+                throw(error?: unknown) {
+                    cancel();
+                    return Promise.reject(error);
+                }
+            };
+        }
+    };
 }
 
 /** Adapts publisher inputs to Flux instances without callback allocation. */
