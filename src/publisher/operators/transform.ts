@@ -5,6 +5,7 @@
 import type {ContextView} from "@/context/context-view.js";
 import {filterIterable, mapIterable} from "@/internal/iterable-transform.js";
 import {Flux} from "@/publisher/flux.js";
+import {liftFilter, liftOneToOne} from "@/publisher/operators/lift.js";
 import type {Mapper, PublisherInput, SynchronousSink} from "@/publisher/types.js";
 import {Signal} from "@/signal/signal.js";
 
@@ -42,7 +43,11 @@ declare module "@/publisher/flux.js" {
 
 Flux.prototype.map = function map<T, R>(this: Flux<T>, mapper: Mapper<T, R>): Flux<R> {
     const source = this;
-    return new Flux((signal, context) => mapIterable(source.iterate(signal, context), mapper));
+    return liftOneToOne(
+        source,
+        (signal, context) => mapIterable(source.iterate(signal, context), mapper),
+        () => ({onNext: mapper})
+    );
 };
 
 Flux.prototype.cast = function cast<T, R>(this: Flux<T>): Flux<R> {
@@ -51,7 +56,11 @@ Flux.prototype.cast = function cast<T, R>(this: Flux<T>): Flux<R> {
 
 Flux.prototype.filter = function filter<T>(this: Flux<T>, predicate: (value: T) => boolean): Flux<T> {
     const source = this;
-    return new Flux((signal, context) => filterIterable(source.iterate(signal, context), predicate));
+    return liftFilter(
+        source,
+        (signal, context) => filterIterable(source.iterate(signal, context), predicate),
+        predicate
+    );
 };
 
 Flux.prototype.handle = function handle<T, R>(

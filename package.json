@@ -1,6 +1,6 @@
 {
   "name": "reactor-core-ts",
-  "version": "3.2.1",
+  "version": "3.2.2",
   "description": "Browser-first TypeScript implementation inspired by Project Reactor Core.",
   "license": "LGPL-3.0-only",
   "author": "CKATEPTb",
@@ -88,6 +88,7 @@
   },
   "files": [
     "dist",
+    "LICENSE.md",
     "README.md"
   ],
   "sideEffects": [

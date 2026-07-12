@@ -3,6 +3,7 @@
  * Flux, Mono and operator implementation modules.
  */
 import {Flux} from "@/publisher/flux.js";
+import {liftOneToOne} from "@/publisher/operators/lift.js";
 
 declare module "@/publisher/flux.js" {
     /** Side-effect callback operators added to Flux. */
@@ -23,36 +24,60 @@ declare module "@/publisher/flux.js" {
 
 Flux.prototype.doOnNext = function doOnNext<T>(this: Flux<T>, callback: (value: T) => void): Flux<T> {
     const source = this;
-    return new Flux(async function* (signal, context) {
-        for await (const value of source.iterate(signal, context)) {
-            callback(value);
-            yield value;
-        }
-    });
+    return liftOneToOne(
+        source,
+        async function* (signal, context) {
+            for await (const value of source.iterate(signal, context)) {
+                callback(value);
+                yield value;
+            }
+        },
+        () => ({
+            /** Runs the side effect and retains the original value. */
+            onNext(value) {
+                callback(value);
+                return value;
+            }
+        })
+    );
 };
 
 Flux.prototype.doOnError = function doOnError<T>(this: Flux<T>, callback: (error: unknown) => void): Flux<T> {
     const source = this;
-    return new Flux(async function* (signal, context) {
-        try {
-            for await (const value of source.iterate(signal, context)) {
-                yield value;
+    return liftOneToOne(
+        source,
+        async function* (signal, context) {
+            try {
+                for await (const value of source.iterate(signal, context)) {
+                    yield value;
+                }
+            } catch (error) {
+                callback(error);
+                throw error;
             }
-        } catch (error) {
-            callback(error);
-            throw error;
-        }
-    });
+        },
+        () => ({
+            onNext: passThrough,
+            onError: callback
+        })
+    );
 };
 
 Flux.prototype.doOnComplete = function doOnComplete<T>(this: Flux<T>, callback: () => void): Flux<T> {
     const source = this;
-    return new Flux(async function* (signal, context) {
-        for await (const value of source.iterate(signal, context)) {
-            yield value;
-        }
-        callback();
-    });
+    return liftOneToOne(
+        source,
+        async function* (signal, context) {
+            for await (const value of source.iterate(signal, context)) {
+                yield value;
+            }
+            callback();
+        },
+        () => ({
+            onNext: passThrough,
+            onComplete: callback
+        })
+    );
 };
 
 Flux.prototype.doFinally = function doFinally<T>(
@@ -60,21 +85,45 @@ Flux.prototype.doFinally = function doFinally<T>(
     callback: (signal: "complete" | "error" | "cancel") => void
 ): Flux<T> {
     const source = this;
-    return new Flux(async function* (signal, context) {
-        let terminal: "complete" | "error" | "cancel" = "complete";
-        try {
-            for await (const value of source.iterate(signal, context)) {
-                if (signal.aborted) {
-                    terminal = "cancel";
-                    return;
+    return liftOneToOne(
+        source,
+        async function* (signal, context) {
+            let terminal: "complete" | "error" | "cancel" = "complete";
+            try {
+                for await (const value of source.iterate(signal, context)) {
+                    if (signal.aborted) {
+                        terminal = "cancel";
+                        return;
+                    }
+                    yield value;
                 }
-                yield value;
+            } catch (error) {
+                terminal = signal.aborted ? "cancel" : "error";
+                throw error;
+            } finally {
+                runFinallyCallback(callback, signal.aborted ? "cancel" : terminal);
             }
-        } catch (error) {
-            terminal = signal.aborted ? "cancel" : "error";
-            throw error;
-        } finally {
-            callback(signal.aborted ? "cancel" : terminal);
-        }
-    });
+        },
+        () => ({
+            onNext: passThrough,
+            onFinally: callback
+        })
+    );
 };
+
+/** Returns an operator value unchanged. */
+function passThrough<T>(value: T): T {
+    return value;
+}
+
+/** Runs a final observer without allowing it to replace sequence termination. */
+function runFinallyCallback(
+    callback: (signal: "complete" | "error" | "cancel") => void,
+    signal: "complete" | "error" | "cancel"
+): void {
+    try {
+        callback(signal);
+    } catch {
+        // Final observers run after propagation and cannot replace the terminal signal.
+    }
+}
