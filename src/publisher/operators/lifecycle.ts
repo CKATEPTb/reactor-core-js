@@ -6,6 +6,7 @@ import {Context} from "@/context/context.js";
 import {ContextView} from "@/context/context-view.js";
 import {Flux} from "@/publisher/flux.js";
 import {scheduleDelay} from "@/publisher/helpers.js";
+import {liftOneToOne, subscriberContext} from "@/publisher/operators/lift.js";
 import type {PublisherInput} from "@/publisher/types.js";
 import {Schedulers} from "@/schedulers/schedulers.js";
 import type {DurationInput, Scheduler} from "@/schedulers/types.js";
@@ -192,13 +193,27 @@ Flux.prototype.contextWrite = function contextWrite<T>(
     contextUpdate: ContextView | Context | ((context: Context) => Context)
 ): Flux<T> {
     const source = this;
-    return new Flux((signal, context) => {
-        const nextContext =
-            typeof contextUpdate === "function"
-                ? contextUpdate(context)
-                : context.putAll(contextUpdate);
-        return source.iterate(signal, nextContext);
-    });
+    return liftOneToOne(
+        source,
+        (signal, context) => {
+            const nextContext =
+                typeof contextUpdate === "function"
+                    ? contextUpdate(context)
+                    : context.putAll(contextUpdate);
+            return source.iterate(signal, nextContext);
+        },
+        subscriber => {
+            const context = subscriberContext(subscriber);
+            const nextContext =
+                typeof contextUpdate === "function"
+                    ? contextUpdate(context)
+                    : context.putAll(contextUpdate);
+            return {
+                onNext: passThrough,
+                currentContext: () => nextContext
+            };
+        }
+    );
 };
 
 Flux.prototype.delaySequence = function delaySequence<T>(
@@ -298,14 +313,36 @@ Flux.prototype.doOnEach = function doOnEach<T>(this: Flux<T>, callback: (signal:
 };
 
 Flux.prototype.doOnRequest = function doOnRequest<T>(this: Flux<T>, callback: (request: number) => void): Flux<T> {
-    return this.doFirst(() => callback(Number.POSITIVE_INFINITY));
+    const source = this;
+    return liftOneToOne(
+        source,
+        (signal, context) => {
+            callback(Number.POSITIVE_INFINITY);
+            return source.iterate(signal, context);
+        },
+        () => ({
+            onNext: passThrough,
+            onRequest: callback
+        })
+    );
 };
 
 Flux.prototype.doOnSubscribe = function doOnSubscribe<T>(
     this: Flux<T>,
     callback: (subscription: Subscription) => void
 ): Flux<T> {
-    return this.doFirst(() => callback(noopSubscription()));
+    const source = this;
+    return liftOneToOne(
+        source,
+        (signal, context) => {
+            callback(noopSubscription());
+            return source.iterate(signal, context);
+        },
+        () => ({
+            onNext: passThrough,
+            onSubscribe: callback
+        })
+    );
 };
 
 Flux.prototype.doOnTerminate = function doOnTerminate<T>(this: Flux<T>, callback: () => void): Flux<T> {
@@ -484,4 +521,9 @@ function noopSubscription(): Subscription {
             // no-op
         }
     };
+}
+
+/** Returns an operator value unchanged. */
+function passThrough<T>(value: T): T {
+    return value;
 }
