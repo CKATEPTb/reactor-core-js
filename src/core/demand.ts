@@ -4,10 +4,10 @@
  */
 /** Validates and normalizes a Reactive Streams request amount. */
 export function normalizeRequest(n: number): number {
-    if (!Number.isFinite(n)) {
+    if (n === Number.POSITIVE_INFINITY) {
         return Number.POSITIVE_INFINITY;
     }
-    if (!Number.isInteger(n) || n <= 0) {
+    if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) {
         throw new RangeError("request amount must be a strictly positive integer");
     }
     return n;
