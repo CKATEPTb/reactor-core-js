@@ -442,6 +442,7 @@ Every row below includes a minimal example.
 | `skipUntilOther` | Drop values until another publisher signals. | `Flux.interval(100).skipUntilOther(Mono.delay(300))` |
 | `distinct` | Keep the first value for each key. | `Flux.just(1, 1, 2).distinct()` |
 | `distinctUntilChanged` | Drop only adjacent duplicates. | `Flux.just(1, 1, 2, 1).distinctUntilChanged()` |
+| `distinctUntilChangedDeep` | Drop adjacent values with equal nested state. | `users.distinctUntilChangedDeep()` |
 | `elementAt` | Pick a value by index. | `Flux.just("a", "b").elementAt(1)` |
 | `defaultIfEmpty` | Emit a fallback value if empty. | `Flux.empty<number>().defaultIfEmpty(0)` |
 | `switchIfEmpty` | Switch to another source if empty. | `Flux.empty<number>().switchIfEmpty(Flux.just(1))` |
@@ -451,6 +452,10 @@ Every row below includes a minimal example.
 | `transformDeferred` | Apply a transformer for each subscription. | `Flux.just(1).transformDeferred(f => f.map(v => v + Date.now()))` |
 | `transformDeferredContextual` | Transform per subscription with `Context`. | `Flux.just(1).transformDeferredContextual((f, ctx) => f.map(v => [v, ctx.get("id")]))` |
 | `hide` | Hide implementation identity. | `Flux.just(1).hide()` |
+
+`distinctUntilChangedDeep` snapshots arrays, enumerable properties of ordinary
+objects, and local `Date`, `RegExp`, `Map` and `Set` values. Other object types
+keep identity-comparison semantics.
 
 ### Flux Flattening And Combining Methods
 

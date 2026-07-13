@@ -4,6 +4,15 @@
  */
 import {type AnyIterable, isAsyncIterable} from "@/internal/iterable.js";
 
+/** Defines how adjacent selected keys are compared and retained. */
+export interface DistinctUntilChangedStrategy<K> {
+    /** Returns true when adjacent keys represent the same state. */
+    equals(previous: unknown, current: K): boolean;
+
+    /** Captures the state retained for the next comparison. */
+    snapshot(value: K): unknown;
+}
+
 /** Maps an iterable, preserving synchronous iteration when possible. */
 export function mapIterable<T, R>(source: AnyIterable<T>, mapper: (value: T) => R): AnyIterable<R> {
     if (isAsyncIterable<T>(source)) {
@@ -165,17 +174,20 @@ export function distinctIterable<T, K>(source: AnyIterable<T>, keySelector: (val
 /** Keeps values whose selected key differs from the previous key. */
 export function distinctUntilChangedIterable<T, K>(
     source: AnyIterable<T>,
-    keySelector: (value: T) => K
+    keySelector: (value: T) => K,
+    strategy?: DistinctUntilChangedStrategy<K>
 ): AnyIterable<T> {
+    const equals = strategy?.equals ?? Object.is;
+    const snapshot = strategy?.snapshot ?? ((value: K): unknown => value);
     if (isAsyncIterable<T>(source)) {
         return (async function* () {
             let hasPrevious = false;
-            let previous: K | undefined;
+            let previous: unknown;
             for await (const value of source) {
                 const key = keySelector(value);
-                if (!hasPrevious || !Object.is(previous, key)) {
+                if (!hasPrevious || !equals(previous, key)) {
                     hasPrevious = true;
-                    previous = key;
+                    previous = snapshot(key);
                     yield value;
                 }
             }
@@ -183,12 +195,12 @@ export function distinctUntilChangedIterable<T, K>(
     }
     return (function* () {
         let hasPrevious = false;
-        let previous: K | undefined;
+        let previous: unknown;
         for (const value of source) {
             const key = keySelector(value);
-            if (!hasPrevious || !Object.is(previous, key)) {
+            if (!hasPrevious || !equals(previous, key)) {
                 hasPrevious = true;
-                previous = key;
+                previous = snapshot(key);
                 yield value;
             }
         }

@@ -2,7 +2,7 @@
  * @packageDocumentation
  * Flux, Mono and operator implementation modules.
  */
-import {Flux} from "@/publisher/flux.js";
+import {deepEqual, snapshotDeep} from "@/internal/deep-value.js";
 import {
     type AnyIterable,
     isAsyncIterable,
@@ -17,6 +17,7 @@ import {
     takeUntilIterable,
     takeWhileIterable
 } from "@/internal/iterable-transform.js";
+import {Flux} from "@/publisher/flux.js";
 import {identity} from "@/publisher/helpers.js";
 import type {PublisherInput} from "@/publisher/types.js";
 
@@ -43,6 +44,12 @@ declare module "@/publisher/flux.js" {
 
         /** Drops adjacent values whose selected key is equal to the previous key. */
         distinctUntilChanged<K = T>(keySelector?: (value: T) => K): Flux<T>;
+
+        /**
+         * Drops adjacent values with equal nested state. Snapshots arrays, enumerable properties of ordinary objects,
+         * and local `Date`, `RegExp`, `Map` and `Set` values; other object types retain identity comparison.
+         */
+        distinctUntilChangedDeep<K = T>(keySelector?: (value: T) => K): Flux<T>;
 
         /** Emits `defaultValue` when the source completes without values. */
         defaultIfEmpty(defaultValue: T): Flux<T>;
@@ -162,6 +169,17 @@ Flux.prototype.distinctUntilChanged = function distinctUntilChanged<T, K = T>(
 ): Flux<T> {
     const source = this;
     return new Flux((signal, context) => distinctUntilChangedIterable(source.iterate(signal, context), keySelector));
+};
+
+Flux.prototype.distinctUntilChangedDeep = function distinctUntilChangedDeep<T, K = T>(
+    this: Flux<T>,
+    keySelector: (value: T) => K = identity as (value: T) => K
+): Flux<T> {
+    const source = this;
+    return new Flux((signal, context) => distinctUntilChangedIterable(source.iterate(signal, context), keySelector, {
+        equals: deepEqual,
+        snapshot: snapshotDeep
+    }));
 };
 
 Flux.prototype.defaultIfEmpty = function defaultIfEmpty<T>(this: Flux<T>, defaultValue: T): Flux<T> {
