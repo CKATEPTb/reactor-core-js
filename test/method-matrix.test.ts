@@ -470,6 +470,7 @@ const fluxCases: FluxCase[] = [
   { name: "dematerialize", apply: () => Flux.just(Signal.next(1), Signal.complete()).dematerialize() },
   { name: "distinct", apply: source => source.distinct(value => String(value)) },
   { name: "distinctUntilChanged", apply: source => source.distinctUntilChanged(value => String(value)) },
+  { name: "distinctUntilChangedDeep", apply: source => source.distinctUntilChangedDeep() },
   { name: "doAfterTerminate", apply: source => source.doAfterTerminate(() => undefined) },
   { name: "doFinally", apply: source => source.doFinally(() => undefined) },
   { name: "doFirst", apply: source => source.doFirst(() => undefined) },
