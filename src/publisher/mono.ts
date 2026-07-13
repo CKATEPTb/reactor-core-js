@@ -9,6 +9,7 @@ import {throwIfNullish} from "@/errors/helpers.js";
 import {firstValueFrom, raceWithAbort} from "@/internal/abort.js";
 import {AsyncQueue} from "@/internal/async-queue.js";
 import {closeAsyncIterator, EMPTY_ITERABLE, isAsyncIterable, neverIterable, toAsyncIterator} from "@/internal/iterable.js";
+import {drainPublisher} from "@/internal/publisher-terminal.js";
 import {Flux} from "@/publisher/flux.js";
 import {addCancelCallback, type CancelCallbacks, runCancelCallbacks, scheduleDelay} from "@/publisher/helpers.js";
 import type {MonoSinkCallback, PublisherInput, SourceFactory} from "@/publisher/types.js";
@@ -500,9 +501,7 @@ function completionDelayErrorTasks(
 
 /** Consumes a publisher and ignores every value. */
 async function drainPublisherInput(source: PublisherInput<unknown>, signal: AbortSignal, context: Context): Promise<void> {
-    for await (const _ of Flux.from(source).iterate(signal, context)) {
-        // values are intentionally ignored
-    }
+    await drainPublisher(Flux.from(source), signal, context);
 }
 
 /** Consumes one publisher and wraps its failure like delayed-error composition. */

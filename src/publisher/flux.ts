@@ -3,7 +3,7 @@
  * Flux, Mono and operator implementation modules.
  */
 import {BooleanDisposable} from "@/core/boolean-disposable.js";
-import {addCap} from "@/core/demand.js";
+import {addCap, UNBOUNDED_DEMAND} from "@/core/demand.js";
 import type {Disposable} from "@/core/types.js";
 import {Context} from "@/context/context.js";
 import type {ContextView} from "@/context/context-view.js";
@@ -20,8 +20,13 @@ import {
     neverIterable,
     toAsyncIterator
 } from "@/internal/iterable.js";
-import {collectIterable, lastIterableValue} from "@/internal/iterable-terminal.js";
+import {
+    isUnboundedIteration,
+    ITERATION_DEMAND_HINT,
+    type IterationDemandAware
+} from "@/internal/iteration-demand.js";
 import {mapIterable} from "@/internal/iterable-transform.js";
+import {collectPublisher, drainPublisher as drainPublisherDirect, lastPublisherValue} from "@/internal/publisher-terminal.js";
 import {eventSource, type WebSocketFluxOptions, webSocketSource} from "@/publisher/browser-sources.js";
 import type {Publisher} from "@/publisher/publisher.js";
 import {addCancelCallback, type CancelCallbacks, isSubscriber, runCancelCallbacks, scheduleDelay} from "@/publisher/helpers.js";
@@ -717,11 +722,13 @@ export class Flux<T> implements Publisher<T>, AsyncIterable<T> {
 
         let subscription: Subscription | undefined;
         const disposable = new BooleanDisposable(() => subscription?.cancel());
-        const subscriber: Subscriber<T> = {
+        const subscriber: Subscriber<T> & IterationDemandAware = {
+            /** Advertises the callback subscriber's fixed unbounded demand before assembly. */
+            [ITERATION_DEMAND_HINT]: () => UNBOUNDED_DEMAND,
             /** Stores the subscription and requests unbounded demand. */
             onSubscribe(nextSubscription) {
                 subscription = nextSubscription;
-                nextSubscription.request(Number.POSITIVE_INFINITY);
+                nextSubscription.request(UNBOUNDED_DEMAND);
             },
             onNext: subscriberOrNext ?? noopSubscriberCallback,
             onError,
@@ -774,13 +781,13 @@ export class Flux<T> implements Publisher<T>, AsyncIterable<T> {
     }
 
     /** Collects all values into an array. */
-    public async toArray(): Promise<T[]> {
-        return collectIterable(this.iterate(new AbortController().signal, Context.empty()));
+    public toArray(): Promise<T[]> {
+        return collectPublisher(this, new AbortController().signal, Context.empty());
     }
 
     /** Resolves to the last emitted value, or undefined for an empty source. */
-    public async toPromise(): Promise<T | undefined> {
-        return lastIterableValue(this.iterate(new AbortController().signal, Context.empty()));
+    public toPromise(): Promise<T | undefined> {
+        return lastPublisherValue(this, new AbortController().signal, Context.empty());
     }
 }
 
@@ -831,6 +838,7 @@ function publisherAsyncIterable<T>(publisher: Publisher<T>, signal: AbortSignal)
             const queue = new AsyncQueue<T>();
             let subscription: Subscription | undefined;
             let pendingDemand = 0;
+            let unboundedRequested = false;
             let terminated = signal.aborted;
 
             const cleanup = () => signal.removeEventListener("abort", cancel);
@@ -894,13 +902,17 @@ function publisherAsyncIterable<T>(publisher: Publisher<T>, signal: AbortSignal)
             }
 
             return {
-                /** Requests exactly one upstream item for one iterator pull. */
+                /** Requests one pull item, or upgrades terminal drains to one unbounded batch. */
                 next() {
                     if (!terminated) {
-                        if (subscription) {
-                            subscription.request(1);
-                        } else {
-                            pendingDemand = addCap(pendingDemand, 1);
+                        const request = isUnboundedIteration(signal) ? UNBOUNDED_DEMAND : 1;
+                        if (request !== UNBOUNDED_DEMAND || !unboundedRequested) {
+                            unboundedRequested = request === UNBOUNDED_DEMAND;
+                            if (subscription) {
+                                subscription.request(request);
+                            } else {
+                                pendingDemand = addCap(pendingDemand, request);
+                            }
                         }
                     }
                     return queue.next();
@@ -1084,8 +1096,6 @@ function sortMergedSourcesDelayError<T>(
 }
 
 /** Consumes a cleanup publisher and ignores all emitted values. */
-async function drainPublisher(source: PublisherInput<unknown>, signal: AbortSignal, context: Context): Promise<void> {
-    for await (const _ of Flux.from(source).iterate(signal, context)) {
-        // cleanup values are ignored
-    }
+function drainPublisher(source: PublisherInput<unknown>, signal: AbortSignal, context: Context): Promise<void> {
+    return drainPublisherDirect(Flux.from(source), signal, context);
 }

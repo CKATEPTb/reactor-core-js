@@ -4,7 +4,9 @@
  */
 import {Context} from "@/context/context.js";
 import {ContextView} from "@/context/context-view.js";
+import {UNBOUNDED_DEMAND} from "@/core/demand.js";
 import {Flux} from "@/publisher/flux.js";
+import {collectPublisher, drainPublisher} from "@/internal/publisher-terminal.js";
 import {scheduleDelay} from "@/publisher/helpers.js";
 import {liftOneToOne, subscriberContext} from "@/publisher/operators/lift.js";
 import type {PublisherInput} from "@/publisher/types.js";
@@ -153,17 +155,14 @@ Flux.prototype.cache = function cache<T>(this: Flux<T>, _ttl?: DurationInput, _s
     let failure: unknown;
     let loaded: Promise<void> | undefined;
     return new Flux(async function* (signal, context) {
-        loaded ??= (async () => {
-            const nextValues: T[] = [];
-            try {
-                for await (const value of source.iterate(signal, context)) {
-                    nextValues.push(value);
-                }
+        loaded ??= collectPublisher<T>(source, signal, context).then(
+            nextValues => {
                 values = nextValues;
-            } catch (error) {
+            },
+            error => {
                 failure = error;
             }
-        })();
+        );
         await loaded;
         if (failure !== undefined) {
             throw failure;
@@ -257,35 +256,61 @@ Flux.prototype.delayUntil = function delayUntil<T>(
 
 Flux.prototype.doAfterTerminate = function doAfterTerminate<T>(this: Flux<T>, callback: () => void): Flux<T> {
     const source = this;
-    return new Flux(async function* (signal, context) {
-        let terminated = false;
-        try {
-            for await (const value of source.iterate(signal, context)) {
-                yield value;
+    return liftOneToOne(
+        source,
+        async function* (signal, context) {
+            let terminated = false;
+            try {
+                for await (const value of source.iterate(signal, context)) {
+                    yield value;
+                }
+                terminated = true;
+            } finally {
+                if (terminated) {
+                    callback();
+                }
             }
-            terminated = true;
-        } finally {
-            if (terminated) {
-                callback();
+        },
+        () => ({
+            onNext: passThrough,
+            /** Runs the callback after non-cancellation terminal signals. */
+            onFinally(signal) {
+                if (signal !== "cancel") {
+                    callback();
+                }
             }
-        }
-    });
+        })
+    );
 };
 
 Flux.prototype.doFirst = function doFirst<T>(this: Flux<T>, callback: () => void): Flux<T> {
     const source = this;
-    return new Flux((signal, context) => {
-        callback();
-        return source.iterate(signal, context);
-    });
+    return liftOneToOne(
+        source,
+        (signal, context) => {
+            callback();
+            return source.iterate(signal, context);
+        },
+        () => {
+            callback();
+            return {onNext: passThrough};
+        }
+    );
 };
 
 Flux.prototype.doOnCancel = function doOnCancel<T>(this: Flux<T>, callback: () => void): Flux<T> {
     const source = this;
-    return new Flux((signal, context) => {
-        signal.addEventListener("abort", callback, {once: true});
-        return source.iterate(signal, context);
-    });
+    return liftOneToOne(
+        source,
+        (signal, context) => {
+            signal.addEventListener("abort", callback, {once: true});
+            return source.iterate(signal, context);
+        },
+        () => ({
+            onNext: passThrough,
+            onCancel: callback
+        })
+    );
 };
 
 Flux.prototype.doOnDiscard = function doOnDiscard<T, R>(
@@ -298,18 +323,30 @@ Flux.prototype.doOnDiscard = function doOnDiscard<T, R>(
 
 Flux.prototype.doOnEach = function doOnEach<T>(this: Flux<T>, callback: (signal: Signal<T>) => void): Flux<T> {
     const source = this;
-    return new Flux(async function* (signal, context) {
-        try {
-            for await (const value of source.iterate(signal, context)) {
-                callback(Signal.next(value));
-                yield value;
+    return liftOneToOne(
+        source,
+        async function* (signal, context) {
+            try {
+                for await (const value of source.iterate(signal, context)) {
+                    callback(Signal.next(value));
+                    yield value;
+                }
+                callback(Signal.complete());
+            } catch (error) {
+                callback(Signal.error(error));
+                throw error;
             }
-            callback(Signal.complete());
-        } catch (error) {
-            callback(Signal.error(error));
-            throw error;
-        }
-    });
+        },
+        () => ({
+            /** Observes one next signal and relays its value. */
+            onNext(value) {
+                callback(Signal.next(value));
+                return value;
+            },
+            onError: error => callback(Signal.error(error)),
+            onComplete: () => callback(Signal.complete())
+        })
+    );
 };
 
 Flux.prototype.doOnRequest = function doOnRequest<T>(this: Flux<T>, callback: (request: number) => void): Flux<T> {
@@ -317,7 +354,7 @@ Flux.prototype.doOnRequest = function doOnRequest<T>(this: Flux<T>, callback: (r
     return liftOneToOne(
         source,
         (signal, context) => {
-            callback(Number.POSITIVE_INFINITY);
+            callback(UNBOUNDED_DEMAND);
             return source.iterate(signal, context);
         },
         () => ({
@@ -347,17 +384,25 @@ Flux.prototype.doOnSubscribe = function doOnSubscribe<T>(
 
 Flux.prototype.doOnTerminate = function doOnTerminate<T>(this: Flux<T>, callback: () => void): Flux<T> {
     const source = this;
-    return new Flux(async function* (signal, context) {
-        try {
-            for await (const value of source.iterate(signal, context)) {
-                yield value;
+    return liftOneToOne(
+        source,
+        async function* (signal, context) {
+            try {
+                for await (const value of source.iterate(signal, context)) {
+                    yield value;
+                }
+                callback();
+            } catch (error) {
+                callback();
+                throw error;
             }
-            callback();
-        } catch (error) {
-            callback();
-            throw error;
-        }
-    });
+        },
+        () => ({
+            onNext: passThrough,
+            onError: callback,
+            onComplete: callback
+        })
+    );
 };
 
 Flux.prototype.limitRate = function limitRate<T>(this: Flux<T>, _highTide: number, _lowTide?: number): Flux<T> {
@@ -464,23 +509,48 @@ Flux.prototype.tag = function tag<T>(this: Flux<T>, _key: string, _value: string
 
 Flux.prototype.tap = function tap<T>(this: Flux<T>, listener: FluxTapListener<T> | (() => FluxTapListener<T>)): Flux<T> {
     const source = this;
-    return new Flux(async function* (signal, context) {
-        const actual = typeof listener === "function" ? listener() : listener;
-        signal.addEventListener("abort", () => actual.onCancel?.(), {once: true});
-        try {
-            for await (const value of source.iterate(signal, context)) {
-                actual.onNext?.(value);
-                actual.onSignal?.(Signal.next(value));
-                yield value;
+    return liftOneToOne(
+        source,
+        async function* (signal, context) {
+            const actual = typeof listener === "function" ? listener() : listener;
+            signal.addEventListener("abort", () => actual.onCancel?.(), {once: true});
+            try {
+                for await (const value of source.iterate(signal, context)) {
+                    actual.onNext?.(value);
+                    actual.onSignal?.(Signal.next(value));
+                    yield value;
+                }
+                actual.onComplete?.();
+                actual.onSignal?.(Signal.complete());
+            } catch (error) {
+                actual.onError?.(error);
+                actual.onSignal?.(Signal.error(error));
+                throw error;
             }
-            actual.onComplete?.();
-            actual.onSignal?.(Signal.complete());
-        } catch (error) {
-            actual.onError?.(error);
-            actual.onSignal?.(Signal.error(error));
-            throw error;
+        },
+        () => {
+            const actual = typeof listener === "function" ? listener() : listener;
+            return {
+                /** Notifies the listener about one value and relays it. */
+                onNext(value) {
+                    actual.onNext?.(value);
+                    actual.onSignal?.(Signal.next(value));
+                    return value;
+                },
+                /** Notifies the listener about an error signal. */
+                onError(error) {
+                    actual.onError?.(error);
+                    actual.onSignal?.(Signal.error(error));
+                },
+                /** Notifies the listener about successful completion. */
+                onComplete() {
+                    actual.onComplete?.();
+                    actual.onSignal?.(Signal.complete());
+                },
+                onCancel: () => actual.onCancel?.()
+            };
         }
-    });
+    );
 };
 
 Flux.prototype.toStream = function toStream<T>(this: Flux<T>): AsyncIterable<T> {
@@ -504,9 +574,7 @@ function isPublisherLike(value: object): boolean {
 
 /** Consumes a publisher input and ignores all emitted values. */
 async function drain(source: PublisherInput<unknown>, signal: AbortSignal, context: Context): Promise<void> {
-    for await (const _ of Flux.from(source).iterate(signal, context)) {
-        // ignored
-    }
+    await drainPublisher(Flux.from(source), signal, context);
 }
 
 /** Creates a no-op subscription object for doOnSubscribe callbacks. */

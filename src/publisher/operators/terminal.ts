@@ -2,9 +2,11 @@
  * @packageDocumentation
  * Flux, Mono and operator implementation modules.
  */
+import {UNBOUNDED_DEMAND} from "@/core/demand.js";
+import {drainPublisher} from "@/internal/publisher-terminal.js";
 import {Flux} from "@/publisher/flux.js";
 import {Mono} from "@/publisher/mono.js";
-import {isAsyncIterable} from "@/internal/iterable.js";
+import {NO_TERMINAL_VALUE, terminalMono} from "@/publisher/operators/terminal-mono.js";
 import type {PublisherInput} from "@/publisher/types.js";
 
 declare module "@/publisher/flux.js" {
@@ -25,19 +27,16 @@ declare module "@/publisher/flux.js" {
 }
 
 Flux.prototype.then = function then<T>(this: Flux<T>): Mono<void> {
-    const source = this;
-    return new Mono((signal, context) => {
-        const values = source.iterate(signal, context);
-        return isAsyncIterable<T>(values) ? drainThenEmitAsync(values, undefined) : drainThenEmitSync(values, undefined);
-    });
+    return terminalMono<T, void>(this, UNBOUNDED_DEMAND, () => ({
+        onNext: () => false,
+        result: () => NO_TERMINAL_VALUE
+    }));
 };
 
 Flux.prototype.thenMany = function thenMany<T, R>(this: Flux<T>, other: PublisherInput<R>): Flux<R> {
     const source = this;
     return new Flux(async function* (signal, context) {
-        for await (const _ of source.iterate(signal, context)) {
-            // ignore values
-        }
+        await drainPublisher(source, signal, context);
         for await (const value of Flux.from(other).iterate(signal, context)) {
             yield value;
         }
@@ -45,30 +44,11 @@ Flux.prototype.thenMany = function thenMany<T, R>(this: Flux<T>, other: Publishe
 };
 
 Flux.prototype.thenReturn = function thenReturn<T, R>(this: Flux<T>, value: R): Mono<R> {
-    const source = this;
-    return new Mono((signal, context) => {
-        const values = source.iterate(signal, context);
-        return isAsyncIterable<T>(values) ? drainThenEmitAsync(values, value) : drainThenEmitSync(values, value);
-    });
+    return terminalMono(this, UNBOUNDED_DEMAND, () => ({
+        onNext: () => false,
+        result: () => value
+    }));
 };
-
-/** Drains a synchronous source and then emits one completion value. */
-function drainThenEmitSync<T, R>(values: Iterable<T>, value: R): Iterable<R> {
-    return (function* () {
-        for (const _ of values) {
-            // ignore values
-        }
-        yield value;
-    })();
-}
-
-/** Drains an asynchronous source and then emits one completion value. */
-async function* drainThenEmitAsync<T, R>(values: AsyncIterable<T>, value: R): AsyncIterable<R> {
-    for await (const _ of values) {
-        // ignore values
-    }
-    yield value;
-}
 
 Flux.prototype.zipWith = function zipWith<T, U, R = readonly [T, U]>(
     this: Flux<T>,
