@@ -59,6 +59,96 @@ describe("operator-specific semantics", () => {
     ]);
   });
 
+  it("distinctUntilChangedDeep detects nested mutations when the root reference is reused", async () => {
+    const user = { about: { name: "Alice" } };
+    const updates = Flux.fromStream(function* () {
+      yield user;
+      yield user;
+      user.about.name = "Bob";
+      yield user;
+      yield user;
+    });
+
+    await expect(
+      updates.distinctUntilChangedDeep().map(value => value.about.name).toArray()
+    ).resolves.toEqual(["Alice", "Bob"]);
+  });
+
+  it("distinctUntilChangedDeep compares nested state across different references", async () => {
+    const first = { about: { name: "Alice" } };
+    const duplicate = { about: { name: "Alice" } };
+    const changed = { about: { name: "Bob" } };
+
+    const result = await Flux.just(first, duplicate, changed).distinctUntilChangedDeep().toArray();
+
+    expect(result).toEqual([first, changed]);
+    expect(result[0]).toBe(first);
+  });
+
+  it("distinctUntilChangedDeep snapshots a selected key for async sources", async () => {
+    const user = { id: 1, about: { name: "Alice" } };
+    const updates = Flux.from((async function* () {
+      yield user;
+      user.id = 2;
+      yield user;
+      user.about.name = "Bob";
+      yield user;
+    })());
+
+    await expect(
+      updates.distinctUntilChangedDeep(value => value.about).map(value => value.about.name).toArray()
+    ).resolves.toEqual(["Alice", "Bob"]);
+  });
+
+  it("distinctUntilChangedDeep tracks sparse array length inside cyclic objects", async () => {
+    const state: { items: unknown[]; self?: unknown } = { items: new Array(1) };
+    state.self = state;
+    const updates = Flux.fromStream(function* () {
+      yield state;
+      state.items.length = 2;
+      yield state;
+    });
+
+    await expect(
+      updates.distinctUntilChangedDeep().map(value => value.items.length).toArray()
+    ).resolves.toEqual([1, 2]);
+  });
+
+  it("distinctUntilChangedDeep snapshots dates, regular expressions and collections", async () => {
+    const state = {
+      date: new Date(0),
+      expression: /name/g,
+      map: new Map([["name", "Alice"]]),
+      set: new Set(["reader"])
+    };
+    const updates = Flux.fromStream(function* () {
+      yield state;
+      state.date.setTime(1);
+      yield state;
+      state.expression.lastIndex = 1;
+      yield state;
+      state.map.set("name", "Bob");
+      yield state;
+      state.set.add("writer");
+      yield state;
+    });
+
+    await expect(
+      updates.distinctUntilChangedDeep().map(value => [
+        value.date.getTime(),
+        value.expression.lastIndex,
+        value.map.get("name"),
+        value.set.size
+      ]).toArray()
+    ).resolves.toEqual([
+      [0, 0, "Alice", 1],
+      [1, 0, "Alice", 1],
+      [1, 1, "Alice", 1],
+      [1, 1, "Bob", 1],
+      [1, 1, "Bob", 2]
+    ]);
+  });
+
   it("window emits usable Flux values instead of awaited thenables", async () => {
     await expect(collectWindows(Flux.range(1, 5).window(2))).resolves.toEqual([[1, 2], [3, 4], [5]]);
   });
