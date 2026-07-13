@@ -5,6 +5,7 @@
 import {TimeoutError} from "@/errors/classes.js";
 import {AsyncQueue} from "@/internal/async-queue.js";
 import {toAsyncIterator} from "@/internal/iterable.js";
+import {inheritIterationDemand} from "@/internal/iteration-demand.js";
 import {Flux} from "@/publisher/flux.js";
 import {raceIteratorWithTimeout, scheduleDelay, TIMEOUT} from "@/publisher/helpers.js";
 import type {PublisherInput} from "@/publisher/types.js";
@@ -57,6 +58,7 @@ Flux.prototype.timeout = function timeout<T>(
     const source = this;
     return new Flux(async function* (signal, context) {
         const controller = new AbortController();
+        inheritIterationDemand(signal, controller.signal);
         const abort = () => controller.abort();
         signal.addEventListener("abort", abort, {once: true});
         const iterator = toAsyncIterator(source.iterate(controller.signal, context));

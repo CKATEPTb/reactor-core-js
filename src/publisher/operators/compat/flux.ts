@@ -2,11 +2,14 @@
  * @packageDocumentation
  * Flux, Mono and operator implementation modules.
  */
+import {UNBOUNDED_DEMAND} from "@/core/demand.js";
 import {NoSuchElementError} from "@/errors/classes.js";
-import {isAsyncIterable} from "@/internal/iterable.js";
+import {consumePublisher} from "@/internal/publisher-terminal.js";
 import {Flux} from "@/publisher/flux.js";
 import {identity} from "@/publisher/helpers.js";
 import {Mono} from "@/publisher/mono.js";
+import {liftOneToOne} from "@/publisher/operators/lift.js";
+import {terminalMono} from "@/publisher/operators/terminal-mono.js";
 import type {PublisherInput} from "@/publisher/types.js";
 import type {Subscriber} from "@/subscription/subscriber.js";
 
@@ -102,25 +105,16 @@ Flux.prototype.collect = function collect<T, R>(
     supplier: () => R,
     accumulator: (container: R, value: T) => void
 ): Mono<R> {
-    const source = this;
-    return new Mono((signal, context) => {
-        const values = source.iterate(signal, context);
-        if (isAsyncIterable<T>(values)) {
-            return (async function* () {
-                const container = supplier();
-                for await (const value of values) {
-                    accumulator(container, value);
-                }
-                yield container;
-            })();
-        }
-        return (function* () {
-            const container = supplier();
-            for (const value of values) {
+    return terminalMono(this, UNBOUNDED_DEMAND, () => {
+        const container = supplier();
+        return {
+            /** Accumulates one value into the supplied container. */
+            onNext(value) {
                 accumulator(container, value);
-            }
-            yield container;
-        })();
+                return false;
+            },
+            result: () => container
+        };
     });
 };
 
@@ -170,16 +164,56 @@ Flux.prototype.elementAt = function elementAt<T>(this: Flux<T>, index: number, d
         throw new RangeError("index must be a non-negative integer");
     }
     const hasDefault = arguments.length > 1;
-    return this.skip(index).next().switchIfEmpty(hasDefault ? Mono.just(defaultValue as T) : Mono.error(new NoSuchElementError()));
+    return terminalMono<T, T>(this, index + 1, () => {
+        let remaining = index;
+        let result: T | undefined;
+        let found = false;
+        return {
+            /** Skips values until the requested index is reached. */
+            onNext(value) {
+                if (remaining > 0) {
+                    remaining -= 1;
+                    return false;
+                }
+                result = value;
+                found = true;
+                return true;
+            },
+            /** Resolves the indexed value, default, or missing-value error. */
+            result() {
+                if (found) {
+                    return result as T;
+                }
+                if (hasDefault) {
+                    return defaultValue as T;
+                }
+                throw new NoSuchElementError();
+            }
+        };
+    });
 };
 
 Flux.prototype.hasElements = function hasElements<T>(this: Flux<T>): Mono<boolean> {
-    return this.any(() => true);
+    return terminalMono(this, 1, () => {
+        let present = false;
+        return {
+            /** Marks the source as non-empty and finishes. */
+            onNext() {
+                present = true;
+                return true;
+            },
+            result: () => present
+        };
+    });
 };
 
 Flux.prototype.hide = function hide<T>(this: Flux<T>): Flux<T> {
     const source = this;
-    return new Flux((signal, context) => source.iterate(signal, context));
+    return liftOneToOne(
+        source,
+        (signal, context) => source.iterate(signal, context),
+        () => ({onNext: identity})
+    );
 };
 
 Flux.prototype.ignoreElements = function ignoreElements<T>(this: Flux<T>): Mono<void> {
@@ -187,22 +221,28 @@ Flux.prototype.ignoreElements = function ignoreElements<T>(this: Flux<T>): Mono<
 };
 
 Flux.prototype.last = function last<T>(this: Flux<T>, defaultValue?: T): Mono<T> {
-    const source = this;
     const hasDefault = arguments.length > 0;
-    return new Mono(async function* (signal, context) {
+    return terminalMono(this, UNBOUNDED_DEMAND, () => {
         let seen = false;
         let lastValue: T | undefined;
-        for await (const value of source.iterate(signal, context)) {
-            seen = true;
-            lastValue = value;
-        }
-        if (seen) {
-            yield lastValue as T;
-        } else if (hasDefault) {
-            yield defaultValue as T;
-        } else {
-            throw new NoSuchElementError();
-        }
+        return {
+            /** Retains the latest source value. */
+            onNext(value) {
+                seen = true;
+                lastValue = value;
+                return false;
+            },
+            /** Resolves the last value, default, or empty-source error. */
+            result() {
+                if (seen) {
+                    return lastValue as T;
+                }
+                if (hasDefault) {
+                    return defaultValue as T;
+                }
+                throw new NoSuchElementError();
+            }
+        };
     });
 };
 
@@ -227,11 +267,16 @@ Flux.prototype.reduceWith = function reduceWith<T, R>(
     supplier: () => R,
     accumulator: (accumulated: R, value: T) => R
 ): Mono<R> {
-    const source = this;
-    return new Mono(async function* (signal, context) {
-        for await (const value of source.reduce(supplier(), accumulator).iterate(signal, context)) {
-            yield value;
-        }
+    return terminalMono(this, UNBOUNDED_DEMAND, () => {
+        let current = supplier();
+        return {
+            /** Folds one value into the supplied initial state. */
+            onNext(value) {
+                current = accumulator(current, value);
+                return false;
+            },
+            result: () => current
+        };
     });
 };
 
@@ -295,14 +340,19 @@ Flux.prototype.takeLast = function takeLast<T>(this: Flux<T>, n: number): Flux<T
     return new Flux(async function* (signal, context) {
         const values: T[] = [];
         let head = 0;
-        for await (const value of source.iterate(signal, context)) {
-            if (values.length < n) {
-                values.push(value);
-            } else {
-                values[head] = value;
-                head = (head + 1) % n;
-            }
-        }
+        await consumePublisher<T, void>(source, signal, context, UNBOUNDED_DEMAND, {
+            /** Stores one value in the bounded trailing ring. */
+            onNext(value) {
+                if (values.length < n) {
+                    values.push(value);
+                } else {
+                    values[head] = value;
+                    head = (head + 1) % n;
+                }
+                return false;
+            },
+            result: () => undefined
+        });
         for (let index = 0; index < values.length; index += 1) {
             if (signal.aborted) {
                 return;

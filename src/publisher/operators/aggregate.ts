@@ -3,14 +3,16 @@
  * Flux, Mono and operator implementation modules.
  */
 import {NoSuchElementError} from "@/errors/classes.js";
+import {UNBOUNDED_DEMAND} from "@/core/demand.js";
 import {AsyncQueue} from "@/internal/async-queue.js";
-import {type AnyIterable, isAsyncIterable} from "@/internal/iterable.js";
-import {collectIterable, countIterable} from "@/internal/iterable-terminal.js";
 import {Flux} from "@/publisher/flux.js";
 import {Mono} from "@/publisher/mono.js";
+import {liftBuffer} from "@/publisher/operators/buffer-lift.js";
+import {liftOneToOne} from "@/publisher/operators/lift.js";
+import {NO_TERMINAL_VALUE, terminalMono} from "@/publisher/operators/terminal-mono.js";
 
 /** Sentinel used when a terminal operation completes without emitting. */
-const NO_VALUE = Symbol("no-value");
+const NO_VALUE: typeof NO_TERMINAL_VALUE = NO_TERMINAL_VALUE;
 
 /** Terminal operation result that may represent an empty Mono. */
 type MaybeValue<T> = T | typeof NO_VALUE;
@@ -67,37 +69,45 @@ Flux.prototype.buffer = function buffer<T>(this: Flux<T>, size: number): Flux<T[
         throw new RangeError("buffer size must be a strictly positive integer");
     }
     const source = this;
-    return new Flux(async function* (signal, context) {
-        let bucket: T[] = [];
-        for await (const value of source.iterate(signal, context)) {
-            bucket.push(value);
-            if (bucket.length === size) {
-                yield bucket;
-                bucket = [];
+    return liftBuffer(
+        source,
+        async function* (signal, context) {
+            let bucket: T[] = [];
+            for await (const value of source.iterate(signal, context)) {
+                bucket.push(value);
+                if (bucket.length === size) {
+                    yield bucket;
+                    bucket = [];
+                }
             }
-        }
-        if (bucket.length > 0) {
-            yield bucket;
-        }
-    });
+            if (bucket.length > 0) {
+                yield bucket;
+            }
+        },
+        size
+    );
 };
 
 Flux.prototype.window = function window<T>(this: Flux<T>, size: number): Flux<Flux<T>> {
     const buffers = this.buffer(size);
-    return new Flux((signal, context) => {
-        const queue = new AsyncQueue<Flux<T>>(signal);
-        void (async () => {
-            try {
-                for await (const values of buffers.iterate(signal, context)) {
-                    queue.push(Flux.fromIterable(values));
+    return liftOneToOne(
+        buffers,
+        (signal, context) => {
+            const queue = new AsyncQueue<Flux<T>>(signal);
+            void (async () => {
+                try {
+                    for await (const values of buffers.iterate(signal, context)) {
+                        queue.push(Flux.fromIterable(values));
+                    }
+                    queue.complete();
+                } catch (error) {
+                    queue.error(error);
                 }
-                queue.complete();
-            } catch (error) {
-                queue.error(error);
-            }
-        })();
-        return queue;
-    });
+            })();
+            return queue;
+        },
+        () => ({onNext: values => Flux.fromIterable(values)})
+    );
 };
 
 Flux.prototype.scan = function scan<T, R>(
@@ -106,30 +116,46 @@ Flux.prototype.scan = function scan<T, R>(
     accumulator?: (accumulated: R, value: T) => R
 ): Flux<R | T> {
     const source = this;
-    return new Flux(async function* (signal, context) {
-        if (accumulator) {
+    if (accumulator) {
+        return new Flux(async function* (signal, context) {
             let current = seedOrAccumulator as R;
             yield current;
             for await (const value of source.iterate(signal, context)) {
                 current = accumulator(current, value);
                 yield current;
             }
-        } else {
+        });
+    }
+    const reduceValues = seedOrAccumulator as (accumulated: T, value: T) => T;
+    return liftOneToOne(
+        source,
+        async function* (signal, context) {
             let initialized = false;
             let current: T | undefined;
-            const acc = seedOrAccumulator as (accumulated: T, value: T) => T;
             for await (const value of source.iterate(signal, context)) {
                 if (!initialized) {
                     current = value;
                     initialized = true;
                     yield current;
                 } else {
-                    current = acc(current as T, value);
+                    current = reduceValues(current as T, value);
                     yield current;
                 }
             }
+        },
+        () => {
+            let initialized = false;
+            let current: T | undefined;
+            return {
+                /** Produces the next running accumulation. */
+                onNext(value: T) {
+                    current = initialized ? reduceValues(current as T, value) : value;
+                    initialized = true;
+                    return current;
+                }
+            };
         }
-    });
+    );
 };
 
 Flux.prototype.reduce = function reduce<T, R>(
@@ -137,25 +163,90 @@ Flux.prototype.reduce = function reduce<T, R>(
     seedOrAccumulator: R | ((left: T, right: T) => T),
     accumulator?: (left: R, right: T) => R
 ): Mono<R | T> {
-    return terminalMono(this, values => accumulator
-        ? reduceSeed(values, seedOrAccumulator as R, accumulator)
-        : reduceNoSeed(values, seedOrAccumulator as (left: T, right: T) => T));
+    if (accumulator) {
+        const seed = seedOrAccumulator as R;
+        return terminalMono<T, R | T>(this, UNBOUNDED_DEMAND, () => {
+            let current = seed;
+            return {
+                /** Folds one source value into the seeded result. */
+                onNext(value) {
+                    current = accumulator(current, value);
+                    return false;
+                },
+                result: () => current
+            };
+        });
+    }
+    const reduceValues = seedOrAccumulator as (left: T, right: T) => T;
+    return terminalMono<T, R | T>(this, UNBOUNDED_DEMAND, () => {
+        let initialized = false;
+        let current: T | undefined;
+        return {
+            /** Uses the first value as the seed and folds later values. */
+            onNext(value) {
+                current = initialized ? reduceValues(current as T, value) : value;
+                initialized = true;
+                return false;
+            },
+            result: () => initialized ? current as T : NO_VALUE
+        };
+    });
 };
 
 Flux.prototype.collectList = function collectList<T>(this: Flux<T>): Mono<T[]> {
-    return terminalMono(this, collectIterable);
+    return terminalMono(this, UNBOUNDED_DEMAND, () => {
+        const values: T[] = [];
+        return {
+            /** Appends one value to the collected list. */
+            onNext(value) {
+                values.push(value);
+                return false;
+            },
+            result: () => values
+        };
+    });
 };
 
 Flux.prototype.count = function count<T>(this: Flux<T>): Mono<number> {
-    return terminalMono(this, countIterable);
+    return terminalMono(this, UNBOUNDED_DEMAND, () => {
+        let count = 0;
+        return {
+            /** Counts one source value. */
+            onNext() {
+                count += 1;
+                return false;
+            },
+            result: () => count
+        };
+    });
 };
 
 Flux.prototype.any = function any<T>(this: Flux<T>, predicate: (value: T) => boolean): Mono<boolean> {
-    return terminalMono(this, values => anyValue(values, predicate));
+    return terminalMono(this, UNBOUNDED_DEMAND, () => {
+        let matched = false;
+        return {
+            /** Tests one value and finishes on the first match. */
+            onNext(value) {
+                matched = predicate(value);
+                return matched;
+            },
+            result: () => matched
+        };
+    });
 };
 
 Flux.prototype.all = function all<T>(this: Flux<T>, predicate: (value: T) => boolean): Mono<boolean> {
-    return terminalMono(this, values => allValue(values, predicate));
+    return terminalMono(this, UNBOUNDED_DEMAND, () => {
+        let matched = true;
+        return {
+            /** Tests one value and finishes on the first mismatch. */
+            onNext(value) {
+                matched = predicate(value);
+                return !matched;
+            },
+            result: () => matched
+        };
+    });
 };
 
 Flux.prototype.hasElement = function hasElement<T>(this: Flux<T>, value: T): Mono<boolean> {
@@ -163,192 +254,51 @@ Flux.prototype.hasElement = function hasElement<T>(this: Flux<T>, value: T): Mon
 };
 
 Flux.prototype.next = function next<T>(this: Flux<T>): Mono<T> {
-    return terminalMono(this, firstValue);
+    return terminalMono<T, T>(this, 1, () => {
+        let result: MaybeValue<T> = NO_VALUE;
+        return {
+            /** Captures the first value and finishes immediately. */
+            onNext(value) {
+                result = value;
+                return true;
+            },
+            result: () => result
+        };
+    });
 };
 
 Flux.prototype.single = function single<T>(this: Flux<T>, defaultValue?: T): Mono<T> {
     const hasDefault = arguments.length > 0;
-    return terminalMono(this, values => singleValue(values, false, hasDefault, defaultValue));
+    return singleTerminal(this, false, hasDefault, defaultValue);
 };
 
 Flux.prototype.singleOrEmpty = function singleOrEmpty<T>(this: Flux<T>): Mono<T> {
-    return terminalMono(this, values => singleValue<T>(values, true));
+    return singleTerminal(this, true, false);
 };
 
-/** Creates a Mono from a terminal iterable computation while preserving sync sources. */
-function terminalMono<T, R>(
+/** Creates a bounded terminal Mono that validates a source has at most one value. */
+function singleTerminal<T>(
     source: Flux<T>,
-    evaluate: (values: AnyIterable<T>) => MaybeValue<R> | Promise<MaybeValue<R>>
-): Mono<R> {
-    return new Mono((signal, context) => {
-        const values = source.iterate(signal, context);
-        return isAsyncIterable<T>(values) ? emitAsync(() => evaluate(values)) : emitSync(() => evaluate(values) as MaybeValue<R>);
-    });
-}
-
-/** Emits a terminal sync value unless it represents an empty Mono. */
-function emitSync<T>(producer: () => MaybeValue<T>): Iterable<T> {
-    return (function* () {
-        const value = producer();
-        if (value !== NO_VALUE) {
-            yield value as T;
-        }
-    })();
-}
-
-/** Emits a terminal async value unless it represents an empty Mono. */
-function emitAsync<T>(producer: () => MaybeValue<T> | Promise<MaybeValue<T>>): AsyncIterable<T> {
-    return (async function* () {
-        const value = await producer();
-        if (value !== NO_VALUE) {
-            yield value as T;
-        }
-    })();
-}
-
-/** Reduces values with an explicit seed. */
-function reduceSeed<T, R>(
-    values: AnyIterable<T>,
-    seed: R,
-    accumulator: (left: R, right: T) => R
-): R | Promise<R> {
-    if (isAsyncIterable<T>(values)) {
-        return (async () => {
-            let current = seed;
-            for await (const value of values) {
-                current = accumulator(current, value);
-            }
-            return current;
-        })();
-    }
-    let current = seed;
-    for (const value of values) {
-        current = accumulator(current, value);
-    }
-    return current;
-}
-
-/** Reduces values using the first value as the seed. */
-function reduceNoSeed<T>(
-    values: AnyIterable<T>,
-    accumulator: (left: T, right: T) => T
-): MaybeValue<T> | Promise<MaybeValue<T>> {
-    if (isAsyncIterable<T>(values)) {
-        return (async () => {
-            let initialized = false;
-            let current: T | undefined;
-            for await (const value of values) {
-                current = initialized ? accumulator(current as T, value) : value;
-                initialized = true;
-            }
-            return initialized ? current as T : NO_VALUE;
-        })();
-    }
-    let initialized = false;
-    let current: T | undefined;
-    for (const value of values) {
-        current = initialized ? accumulator(current as T, value) : value;
-        initialized = true;
-    }
-    return initialized ? current as T : NO_VALUE;
-}
-
-/** Returns true when any value matches the predicate. */
-function anyValue<T>(values: AnyIterable<T>, predicate: (value: T) => boolean): boolean | Promise<boolean> {
-    if (isAsyncIterable<T>(values)) {
-        return (async () => {
-            for await (const value of values) {
-                if (predicate(value)) {
-                    return true;
-                }
-            }
-            return false;
-        })();
-    }
-    for (const value of values) {
-        if (predicate(value)) {
-            return true;
-        }
-    }
-    return false;
-}
-
-/** Returns true when every value matches the predicate. */
-function allValue<T>(values: AnyIterable<T>, predicate: (value: T) => boolean): boolean | Promise<boolean> {
-    if (isAsyncIterable<T>(values)) {
-        return (async () => {
-            for await (const value of values) {
-                if (!predicate(value)) {
-                    return false;
-                }
-            }
-            return true;
-        })();
-    }
-    for (const value of values) {
-        if (!predicate(value)) {
-            return false;
-        }
-    }
-    return true;
-}
-
-/** Returns the first value and closes the source iterator early. */
-function firstValue<T>(values: AnyIterable<T>): MaybeValue<T> | Promise<MaybeValue<T>> {
-    if (isAsyncIterable<T>(values)) {
-        return (async () => {
-            const iterator = values[Symbol.asyncIterator]();
-            try {
-                const next = await iterator.next();
-                return next.done ? NO_VALUE : next.value;
-            } finally {
-                await iterator.return?.();
-            }
-        })();
-    }
-    const iterator = values[Symbol.iterator]();
-    try {
-        const next = iterator.next();
-        return next.done ? NO_VALUE : next.value;
-    } finally {
-        iterator.return?.();
-    }
-}
-
-/** Returns the only value, a default value or the empty sentinel. */
-function singleValue<T>(
-    values: AnyIterable<T>,
     emptyIsAllowed: boolean,
     hasDefault = false,
     defaultValue?: T
-): MaybeValue<T> | Promise<MaybeValue<T>> {
-    if (isAsyncIterable<T>(values)) {
-        return (async () => singleResult(await collectSingle(values), emptyIsAllowed, hasDefault, defaultValue))();
-    }
-    let seen = false;
-    let result: T | undefined;
-    for (const value of values) {
-        if (seen) {
-            throw new Error("Source emitted more than one item");
-        }
-        seen = true;
-        result = value;
-    }
-    return singleResult(seen ? result as T : NO_VALUE, emptyIsAllowed, hasDefault, defaultValue);
-}
-
-/** Collects exactly one async value or returns the empty sentinel. */
-async function collectSingle<T>(values: AsyncIterable<T>): Promise<MaybeValue<T>> {
-    let seen = false;
-    let result: T | undefined;
-    for await (const value of values) {
-        if (seen) {
-            throw new Error("Source emitted more than one item");
-        }
-        seen = true;
-        result = value;
-    }
-    return seen ? result as T : NO_VALUE;
+): Mono<T> {
+    return terminalMono<T, T>(source, 2, () => {
+        let seen = false;
+        let value: T | undefined;
+        return {
+            /** Captures one value and rejects a second source value. */
+            onNext(next) {
+                if (seen) {
+                    throw new Error("Source emitted more than one item");
+                }
+                seen = true;
+                value = next;
+                return false;
+            },
+            result: () => singleResult(seen ? value as T : NO_VALUE, emptyIsAllowed, hasDefault, defaultValue)
+        };
+    });
 }
 
 /** Resolves single-value empty/default behavior. */

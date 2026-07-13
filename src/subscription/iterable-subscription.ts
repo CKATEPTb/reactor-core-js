@@ -2,9 +2,10 @@
  * @packageDocumentation
  * Reactive Streams subscription and subscriber contracts.
  */
-import {addCap, normalizeRequest} from "@/core/demand.js";
+import {addCap, normalizeRequest, UNBOUNDED_DEMAND} from "@/core/demand.js";
 import type {Context} from "@/context/context.js";
 import {doneResult, isAsyncIterable, resolvedDoneResult} from "@/internal/iterable.js";
+import {applyIterationDemandHint, markUnboundedIteration} from "@/internal/iteration-demand.js";
 import {scheduleMicrotask} from "@/internal/microtask.js";
 import type {Flux} from "@/publisher/flux.js";
 import type {Subscriber} from "@/subscription/subscriber.js";
@@ -48,6 +49,7 @@ export class IterableSubscription<T> implements Subscription {
         this.flux = flux;
         this.subscriber = subscriber;
         this.context = context;
+        applyIterationDemandHint(this.controller.signal, subscriber);
     }
 
     /** Starts source assembly without pulling any values from it. */
@@ -91,6 +93,9 @@ export class IterableSubscription<T> implements Subscription {
             this.cancel();
             this.subscriber.onError(error);
             return;
+        }
+        if (request === UNBOUNDED_DEMAND) {
+            markUnboundedIteration(this.controller.signal);
         }
         this.requested = addCap(this.requested, request);
         if (this.hasStartFailure) {
@@ -172,7 +177,7 @@ export class IterableSubscription<T> implements Subscription {
             this.subscriber.onComplete();
             return true;
         }
-        if (this.requested !== Number.POSITIVE_INFINITY) {
+        if (this.requested !== UNBOUNDED_DEMAND) {
             this.requested -= 1;
         }
         try {

@@ -3,7 +3,8 @@
  * Internal subscriber-lifting primitives for demand-preserving Flux operators.
  */
 import {Context} from "@/context/context.js";
-import {addCap} from "@/core/demand.js";
+import {addCap, normalizeRequest, UNBOUNDED_DEMAND} from "@/core/demand.js";
+import {ITERATION_DEMAND_HINT, iterationDemandHint} from "@/internal/iteration-demand.js";
 import type {SourceFactory} from "@/publisher/types.js";
 import {Flux} from "@/publisher/flux.js";
 import type {CoreSubscriber} from "@/subscription/core-subscriber.js";
@@ -70,6 +71,11 @@ export function liftFilter<T>(
     predicate: (value: T) => boolean
 ): Flux<T> {
     return liftFlux(source, sourceFactory, subscriber => new FilterOperatorSubscriber(subscriber, predicate));
+}
+
+/** Creates a limiting operator that never requests more than its remaining item count. */
+export function liftTake<T>(source: Flux<T>, sourceFactory: SourceFactory<T>, count: number): Flux<T> {
+    return liftFlux(source, sourceFactory, subscriber => new TakeOperatorSubscriber(subscriber, count));
 }
 
 /** Returns the context exposed by a subscriber, or the shared empty context. */
@@ -161,6 +167,9 @@ class OneToOneOperatorSubscriber<T, R> implements CoreSubscriber<T>, Subscriptio
             this.terminateWithError(error, true);
             return;
         }
+        if (this.terminated) {
+            return;
+        }
         this.actual.onNext(mapped);
     }
 
@@ -180,6 +189,9 @@ class OneToOneOperatorSubscriber<T, R> implements CoreSubscriber<T>, Subscriptio
             this.terminateWithError(error, false);
             return;
         }
+        if (this.terminated) {
+            return;
+        }
         this.terminated = true;
         try {
             this.actual.onComplete();
@@ -197,6 +209,9 @@ class OneToOneOperatorSubscriber<T, R> implements CoreSubscriber<T>, Subscriptio
             this.hooks.onRequest?.(n);
         } catch (error) {
             this.terminateWithError(error, true);
+            return;
+        }
+        if (this.terminated) {
             return;
         }
         this.upstream?.request(n);
@@ -222,6 +237,11 @@ class OneToOneOperatorSubscriber<T, R> implements CoreSubscriber<T>, Subscriptio
     /** Exposes downstream context to context-aware upstream publishers. */
     public currentContext(): Context {
         return this.hooks.currentContext?.() ?? subscriberContext(this.actual);
+    }
+
+    /** Propagates a known terminal demand batch through this one-to-one boundary. */
+    public [ITERATION_DEMAND_HINT](): number | undefined {
+        return iterationDemandHint(this.actual);
     }
 
     /** Cancels when needed and emits one downstream error signal. */
@@ -346,7 +366,7 @@ class FilterOperatorSubscriber<T> implements CoreSubscriber<T>, Subscription {
         if (this.terminated) {
             return;
         }
-        if (n === Number.POSITIVE_INFINITY) {
+        if (n === UNBOUNDED_DEMAND) {
             this.unbounded = true;
         }
         this.requestUpstream(n);
@@ -364,6 +384,11 @@ class FilterOperatorSubscriber<T> implements CoreSubscriber<T>, Subscription {
     /** Exposes the downstream context unchanged. */
     public currentContext(): Context {
         return subscriberContext(this.actual);
+    }
+
+    /** Propagates a known unbounded terminal batch through this filtering boundary. */
+    public [ITERATION_DEMAND_HINT](): number | undefined {
+        return iterationDemandHint(this.actual);
     }
 
     /** Drains demand iteratively so synchronous sources cannot recurse through dropped values. */
@@ -390,6 +415,164 @@ class FilterOperatorSubscriber<T> implements CoreSubscriber<T>, Subscription {
         } finally {
             this.requesting = false;
         }
+    }
+}
+
+/** Subscriber that caps cumulative upstream demand and completes after a fixed number of values. */
+class TakeOperatorSubscriber<T> implements CoreSubscriber<T>, Subscription {
+    /** Active upstream subscription. */
+    private upstream: Subscription | undefined;
+    /** Remaining values before this operator completes. */
+    private remaining: number;
+    /** Requested upstream values that have not arrived yet. */
+    private outstanding = 0;
+    /** Guards synchronous upstream request calls against recursive downstream demand. */
+    private requesting = false;
+    /** Downstream demand accumulated while an upstream request is active. */
+    private missedRequested = 0;
+    /** Prevents duplicate subscriptions from replacing the active upstream. */
+    private subscribed = false;
+    /** Suppresses signals after cancellation or termination. */
+    private terminated = false;
+
+    /** Creates a take subscriber with the provided maximum value count. */
+    public constructor(private readonly actual: Subscriber<T>, count: number) {
+        this.remaining = count;
+    }
+
+    /** Stores upstream and exposes the capped subscription downstream. */
+    public onSubscribe(subscription: Subscription): void {
+        if (this.subscribed || this.terminated) {
+            cancelSilently(subscription);
+            return;
+        }
+        this.subscribed = true;
+        this.upstream = subscription;
+        try {
+            this.actual.onSubscribe(this);
+        } catch (error) {
+            this.terminated = true;
+            cancelSilently(subscription);
+            throw error;
+        }
+    }
+
+    /** Forwards one value and cancels upstream exactly at the configured limit. */
+    public onNext(value: T): void {
+        if (this.terminated || this.remaining === 0) {
+            return;
+        }
+        if (this.outstanding > 0) {
+            this.outstanding -= 1;
+        }
+        this.remaining -= 1;
+        try {
+            this.actual.onNext(value);
+        } catch (error) {
+            if (this.terminated) {
+                return;
+            }
+            this.terminated = true;
+            if (this.upstream) {
+                cancelSilently(this.upstream);
+            }
+            this.actual.onError(error);
+            return;
+        }
+        if (this.remaining === 0 && !this.terminated) {
+            this.terminated = true;
+            if (this.upstream) {
+                cancelSilently(this.upstream);
+            }
+            this.actual.onComplete();
+        }
+    }
+
+    /** Forwards the first upstream failure. */
+    public onError(error: unknown): void {
+        if (this.terminated) {
+            return;
+        }
+        this.terminated = true;
+        this.actual.onError(error);
+    }
+
+    /** Forwards early upstream completion. */
+    public onComplete(): void {
+        if (this.terminated) {
+            return;
+        }
+        this.terminated = true;
+        this.actual.onComplete();
+    }
+
+    /** Requests only demand that still fits below the take limit. */
+    public request(n: number): void {
+        if (this.terminated) {
+            return;
+        }
+        let demand: number;
+        try {
+            demand = normalizeRequest(n);
+        } catch (error) {
+            this.terminated = true;
+            if (this.upstream) {
+                cancelSilently(this.upstream);
+            }
+            this.actual.onError(error);
+            return;
+        }
+        if (this.requesting) {
+            this.missedRequested = addCap(this.missedRequested, demand);
+            return;
+        }
+        this.requesting = true;
+        let nextDemand = demand;
+        try {
+            while (!this.terminated) {
+                const available = this.remaining - this.outstanding;
+                if (available > 0) {
+                    const request = Math.min(nextDemand, available);
+                    this.outstanding += request;
+                    this.upstream?.request(request);
+                }
+                if (this.terminated || this.missedRequested === 0) {
+                    return;
+                }
+                nextDemand = this.missedRequested;
+                this.missedRequested = 0;
+            }
+        } catch (error) {
+            if (!this.terminated) {
+                this.terminated = true;
+                if (this.upstream) {
+                    cancelSilently(this.upstream);
+                }
+                this.actual.onError(error);
+            }
+        } finally {
+            this.requesting = false;
+        }
+    }
+
+    /** Cancels the active upstream once. */
+    public cancel(): void {
+        if (this.terminated) {
+            return;
+        }
+        this.terminated = true;
+        this.upstream?.cancel();
+    }
+
+    /** Exposes the downstream context unchanged. */
+    public currentContext(): Context {
+        return subscriberContext(this.actual);
+    }
+
+    /** Propagates downstream demand metadata while `take` still applies its own cap. */
+    public [ITERATION_DEMAND_HINT](): number | undefined {
+        const downstream = iterationDemandHint(this.actual);
+        return downstream === undefined ? undefined : Math.min(downstream, this.remaining);
     }
 }
 

@@ -19,6 +19,7 @@ import {
 } from "@/internal/iterable-transform.js";
 import {Flux} from "@/publisher/flux.js";
 import {identity} from "@/publisher/helpers.js";
+import {liftTake} from "@/publisher/operators/lift.js";
 import type {PublisherInput} from "@/publisher/types.js";
 
 declare module "@/publisher/flux.js" {
@@ -67,7 +68,7 @@ Flux.prototype.take = function take<T>(this: Flux<T>, n: number): Flux<T> {
         return Flux.empty<T>();
     }
     const source = this;
-    return new Flux((signal, context) => {
+    return liftTake(source, (signal, context) => {
         const controller = new AbortController();
         const abort = () => controller.abort(signal.reason);
         signal.addEventListener("abort", abort, {once: true});
@@ -126,7 +127,7 @@ Flux.prototype.take = function take<T>(this: Flux<T>, n: number): Flux<T> {
                 }
             }
         })();
-    });
+    }, n);
 };
 
 Flux.prototype.takeWhile = function takeWhile<T>(this: Flux<T>, predicate: (value: T) => boolean): Flux<T> {

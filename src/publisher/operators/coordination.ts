@@ -6,6 +6,7 @@ import {Context} from "@/context/context.js";
 import {AsyncQueue} from "@/internal/async-queue.js";
 import {toAsyncIterator} from "@/internal/iterable.js";
 import {Flux} from "@/publisher/flux.js";
+import {collectPublisher, drainPublisher} from "@/internal/publisher-terminal.js";
 import {scheduleDelay} from "@/publisher/helpers.js";
 import type {PublisherInput} from "@/publisher/types.js";
 import {Schedulers} from "@/schedulers/schedulers.js";
@@ -537,18 +538,12 @@ function delayErrors<T>(source: Flux<T>): Flux<T> {
 
 /** Collects a finite publisher input into an array. */
 async function collect<T>(source: PublisherInput<T>, signal: AbortSignal, context: Context): Promise<T[]> {
-    const values: T[] = [];
-    for await (const value of Flux.from(source).iterate(signal, context)) {
-        values.push(value);
-    }
-    return values;
+    return collectPublisher(Flux.from(source), signal, context);
 }
 
 /** Consumes a publisher input and ignores all values. */
 async function drain(source: PublisherInput<unknown>, signal: AbortSignal, context: Context): Promise<void> {
-    for await (const _ of Flux.from(source).iterate(signal, context)) {
-        // ignored
-    }
+    await drainPublisher(Flux.from(source), signal, context);
 }
 
 /** Resolves the first value from a publisher input using the current subscriber context. */
